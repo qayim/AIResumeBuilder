@@ -3,10 +3,12 @@ import { SparklesIcon } from './icons'
 interface Props {
   jobDescription: string
   currentResume: string
+  fitOnly: boolean
   loading: boolean
   hasApiKey: boolean
   onJobDescriptionChange: (v: string) => void
   onCurrentResumeChange: (v: string) => void
+  onFitOnlyChange: (v: boolean) => void
   onGenerate: () => void
   onCancel: () => void
   onOpenSettings: () => void
@@ -20,10 +22,12 @@ function wordCount(text: string): number {
 export default function ResumeForm({
   jobDescription,
   currentResume,
+  fitOnly,
   loading,
   hasApiKey,
   onJobDescriptionChange,
   onCurrentResumeChange,
+  onFitOnlyChange,
   onGenerate,
   onCancel,
   onOpenSettings,
@@ -68,10 +72,37 @@ export default function ResumeForm({
         </div>
       </div>
 
+      <div className="mt-5 flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <div>
+          <p className="text-sm font-medium text-slate-800">Fit check only</p>
+          <p className="text-xs text-slate-500">
+            Skip resume rewriting — only score interview fit and keywords. Uses fewer tokens.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={fitOnly}
+          aria-label="Fit check only mode"
+          disabled={loading}
+          onClick={() => onFitOnlyChange(!fitOnly)}
+          className={`relative h-7 w-12 flex-none rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 disabled:opacity-50 ${
+            fitOnly ? 'bg-brand-600' : 'bg-slate-300'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${
+              fitOnly ? 'translate-x-5' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
+
       <div className="mt-5 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-slate-500">
-          Tip: paste as much detail as possible. Nothing is invented — the AI only re-emphasizes what's
-          truly in your resume.
+          {fitOnly
+            ? 'Fit-only mode analyzes your current resume as-is — no .docx download.'
+            : 'Tip: paste as much detail as possible. Nothing is invented — the AI only re-emphasizes what\'s truly in your resume.'}
         </p>
         <div className="flex items-center gap-2">
           {loading ? (
@@ -82,7 +113,13 @@ export default function ResumeForm({
           {hasApiKey ? (
             <button className="btn-primary" onClick={onGenerate} disabled={!canGenerate || loading}>
               <SparklesIcon width={16} height={16} />
-              {loading ? 'Tailoring…' : 'Tailor my resume'}
+              {loading
+                ? fitOnly
+                  ? 'Checking fit…'
+                  : 'Tailoring…'
+                : fitOnly
+                  ? 'Check interview fit'
+                  : 'Tailor my resume'}
             </button>
           ) : (
             <button className="btn-primary" onClick={onOpenSettings}>
@@ -93,7 +130,7 @@ export default function ResumeForm({
       </div>
       {!canGenerate && (jobDescription || currentResume) ? (
         <p className="mt-2 text-right text-xs text-amber-600">
-          Add more detail to both fields (at least a few sentences each) to enable tailoring.
+          Add more detail to both fields (at least a few sentences each) to continue.
         </p>
       ) : null}
     </div>

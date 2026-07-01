@@ -52,7 +52,11 @@ export interface InterviewAnalysis {
   interviewChance: number
   /** Short verdict label, e.g. "Strong match". */
   verdict: string
-  /** Keywords from the job description already present in the tailored resume. */
+  /** Job title extracted from the job description (for file naming). */
+  jobTitle: string
+  /** Company name extracted from the job description (for file naming). */
+  company: string
+  /** Keywords from the job description already present in the resume. */
   matchedKeywords: string[]
   /** Important keywords from the job description still missing from the resume. */
   missingKeywords: string[]
@@ -66,10 +70,15 @@ export interface TokenUsage {
   promptTokens: number
   outputTokens: number
   totalTokens: number
+  /** Estimated API cost in USD for this request. */
+  estimatedCostUsd: number
 }
 
+export type GenerationMode = 'full' | 'fit-only'
+
 export interface GenerationResult {
-  resume: TailoredResume
+  mode: GenerationMode
+  resume: TailoredResume | null
   analysis: InterviewAnalysis
   usage: TokenUsage
 }

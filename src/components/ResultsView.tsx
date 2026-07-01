@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { GenerationResult, TailoredResume } from '../types'
+import { formatCostUsd } from '../lib/pricing'
 import ChanceGauge from './ChanceGauge'
 import { CheckIcon, CopyIcon, DownloadIcon } from './icons'
 
@@ -167,81 +168,110 @@ function KeywordChips({ items, tone }: { items: string[]; tone: 'good' | 'bad' }
 }
 
 export default function ResultsView({ result, downloading, onDownload }: Props) {
-  const { resume, analysis, usage } = result
+  const { resume, analysis, usage, mode } = result
   const [copied, setCopied] = useState(false)
+  const isFitOnly = mode === 'fit-only'
 
   const copyText = async () => {
+    if (!resume) return
     await navigator.clipboard.writeText(resumeToPlainText(resume))
     setCopied(true)
     setTimeout(() => setCopied(false), 1800)
   }
 
+  const analysisPanel = (
+    <div className="space-y-4">
+      <div className="card p-5">
+        <div className="mb-1 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-900">Interview chance</h3>
+          {isFitOnly ? (
+            <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200">
+              Fit check only
+            </span>
+          ) : null}
+        </div>
+        <ChanceGauge value={analysis.interviewChance} verdict={analysis.verdict} />
+        <p className="mt-4 text-sm leading-relaxed text-slate-600">{analysis.reasoning}</p>
+        <p className="mt-3 text-xs text-slate-400">
+          {analysis.jobTitle} at {analysis.company}
+        </p>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="mb-2 text-sm font-semibold text-green-700">Matched keywords</h3>
+        <KeywordChips items={analysis.matchedKeywords} tone="good" />
+        <h3 className="mb-2 mt-4 text-sm font-semibold text-rose-700">Missing / weak keywords</h3>
+        <KeywordChips items={analysis.missingKeywords} tone="bad" />
+      </div>
+
+      {analysis.suggestions?.length ? (
+        <div className="card p-5">
+          <h3 className="mb-2 text-sm font-semibold text-slate-900">Suggestions to improve</h3>
+          <ul className="space-y-1.5">
+            {analysis.suggestions.map((s, i) => (
+              <li key={i} className="flex gap-2 text-sm text-slate-600">
+                <CheckIcon width={15} height={15} className="mt-0.5 flex-none text-brand-500" />
+                <span>{s}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="card p-4">
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Token usage (this request)
+        </h3>
+        <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
+          <div className="rounded-lg bg-slate-50 py-2">
+            <p className="text-base font-bold text-slate-800">{usage.promptTokens.toLocaleString()}</p>
+            <p className="text-[11px] text-slate-500">Input</p>
+          </div>
+          <div className="rounded-lg bg-slate-50 py-2">
+            <p className="text-base font-bold text-slate-800">{usage.outputTokens.toLocaleString()}</p>
+            <p className="text-[11px] text-slate-500">Output</p>
+          </div>
+          <div className="rounded-lg bg-brand-50 py-2">
+            <p className="text-base font-bold text-brand-700">{usage.totalTokens.toLocaleString()}</p>
+            <p className="text-[11px] text-slate-500">Total</p>
+          </div>
+          <div className="rounded-lg bg-emerald-50 py-2">
+            <p className="text-base font-bold text-emerald-700">{formatCostUsd(usage.estimatedCostUsd)}</p>
+            <p className="text-[11px] text-slate-500">Est. cost</p>
+          </div>
+        </div>
+        <p className="mt-2 text-[10px] text-slate-400">
+          Cost is estimated from published Gemini pricing. Free-tier keys may not be billed.
+        </p>
+      </div>
+    </div>
+  )
+
+  if (isFitOnly) {
+    return <div className="max-w-xl animate-fade-in">{analysisPanel}</div>
+  }
+
   return (
     <div className="grid animate-fade-in gap-5 lg:grid-cols-[360px_1fr]">
-      <div className="space-y-4">
-        <div className="card p-5">
-          <h3 className="mb-3 text-sm font-semibold text-slate-900">Interview chance</h3>
-          <ChanceGauge value={analysis.interviewChance} verdict={analysis.verdict} />
-          <p className="mt-4 text-sm leading-relaxed text-slate-600">{analysis.reasoning}</p>
-        </div>
-
-        <div className="card p-5">
-          <h3 className="mb-2 text-sm font-semibold text-green-700">Matched keywords</h3>
-          <KeywordChips items={analysis.matchedKeywords} tone="good" />
-          <h3 className="mb-2 mt-4 text-sm font-semibold text-rose-700">Missing / weak keywords</h3>
-          <KeywordChips items={analysis.missingKeywords} tone="bad" />
-        </div>
-
-        {analysis.suggestions?.length ? (
-          <div className="card p-5">
-            <h3 className="mb-2 text-sm font-semibold text-slate-900">Suggestions to improve</h3>
-            <ul className="space-y-1.5">
-              {analysis.suggestions.map((s, i) => (
-                <li key={i} className="flex gap-2 text-sm text-slate-600">
-                  <CheckIcon width={15} height={15} className="mt-0.5 flex-none text-brand-500" />
-                  <span>{s}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-
-        <div className="card p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Token usage (this request)
-          </h3>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-lg bg-slate-50 py-2">
-              <p className="text-base font-bold text-slate-800">{usage.promptTokens}</p>
-              <p className="text-[11px] text-slate-500">Input</p>
-            </div>
-            <div className="rounded-lg bg-slate-50 py-2">
-              <p className="text-base font-bold text-slate-800">{usage.outputTokens}</p>
-              <p className="text-[11px] text-slate-500">Output</p>
-            </div>
-            <div className="rounded-lg bg-brand-50 py-2">
-              <p className="text-base font-bold text-brand-700">{usage.totalTokens}</p>
-              <p className="text-[11px] text-slate-500">Total</p>
-            </div>
-          </div>
-        </div>
-      </div>
+      {analysisPanel}
 
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-slate-900">Tailored resume preview</h3>
-          <div className="flex gap-2">
-            <button className="btn-secondary !py-2 !text-xs" onClick={copyText}>
-              {copied ? <CheckIcon width={14} height={14} /> : <CopyIcon width={14} height={14} />}
-              {copied ? 'Copied' : 'Copy text'}
-            </button>
-            <button className="btn-primary !py-2 !text-xs" onClick={onDownload} disabled={downloading}>
-              <DownloadIcon width={14} height={14} />
-              {downloading ? 'Preparing…' : 'Download .docx'}
-            </button>
-          </div>
+          {resume ? (
+            <div className="flex gap-2">
+              <button className="btn-secondary !py-2 !text-xs" onClick={copyText}>
+                {copied ? <CheckIcon width={14} height={14} /> : <CopyIcon width={14} height={14} />}
+                {copied ? 'Copied' : 'Copy text'}
+              </button>
+              <button className="btn-primary !py-2 !text-xs" onClick={onDownload} disabled={downloading}>
+                <DownloadIcon width={14} height={14} />
+                {downloading ? 'Preparing…' : 'Download .docx'}
+              </button>
+            </div>
+          ) : null}
         </div>
-        <ResumePreview resume={resume} />
+        {resume ? <ResumePreview resume={resume} /> : null}
       </div>
     </div>
   )

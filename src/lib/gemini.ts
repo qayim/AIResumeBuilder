@@ -1,10 +1,12 @@
 import type {
+  GenerationMode,
   GenerationResult,
   InterviewAnalysis,
   Settings,
   TailoredResume,
   TokenUsage,
 } from '../types'
+import { estimateTokenCost } from './pricing'
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
@@ -20,7 +22,31 @@ export const AVAILABLE_MODELS = [
 
 const stringArray = { type: 'ARRAY', items: { type: 'STRING' } }
 
-const responseSchema = {
+const analysisSchema = {
+  type: 'OBJECT',
+  properties: {
+    interviewChance: { type: 'INTEGER' },
+    verdict: { type: 'STRING' },
+    jobTitle: { type: 'STRING' },
+    company: { type: 'STRING' },
+    matchedKeywords: stringArray,
+    missingKeywords: stringArray,
+    suggestions: stringArray,
+    reasoning: { type: 'STRING' },
+  },
+  required: [
+    'interviewChance',
+    'verdict',
+    'jobTitle',
+    'company',
+    'matchedKeywords',
+    'missingKeywords',
+    'suggestions',
+    'reasoning',
+  ],
+}
+
+const fullResponseSchema = {
   type: 'OBJECT',
   properties: {
     resume: {
@@ -103,30 +129,20 @@ const responseSchema = {
         'projects',
       ],
     },
-    analysis: {
-      type: 'OBJECT',
-      properties: {
-        interviewChance: { type: 'INTEGER' },
-        verdict: { type: 'STRING' },
-        matchedKeywords: stringArray,
-        missingKeywords: stringArray,
-        suggestions: stringArray,
-        reasoning: { type: 'STRING' },
-      },
-      required: [
-        'interviewChance',
-        'verdict',
-        'matchedKeywords',
-        'missingKeywords',
-        'suggestions',
-        'reasoning',
-      ],
-    },
+    analysis: analysisSchema,
   },
   required: ['resume', 'analysis'],
 }
 
-const SYSTEM_INSTRUCTION = `You are an expert technical recruiter and professional resume writer with deep knowledge of Applicant Tracking Systems (ATS).
+const fitOnlyResponseSchema = {
+  type: 'OBJECT',
+  properties: {
+    analysis: analysisSchema,
+  },
+  required: ['analysis'],
+}
+
+const FULL_SYSTEM_INSTRUCTION = `You are an expert technical recruiter and professional resume writer with deep knowledge of Applicant Tracking Systems (ATS).
 
 Your task:
 1. Rewrite the candidate's resume so it is tailored to the provided job description.
@@ -140,12 +156,28 @@ Strict rules for tailoring:
 - Group skills into sensible categories and prioritize skills relevant to the job description.
 - If a field is unknown, use an empty string or empty array rather than guessing.
 
-Scoring rules for analysis.interviewChance:
-- Base the score on genuine overlap between the candidate's real qualifications and the job's hard requirements (years of experience, must-have skills, seniority, domain).
-- Be realistic and calibrated, not flattering. A weak match should score low.
-- matchedKeywords: important job-description keywords that ARE supported by the resume.
+Scoring rules for analysis:
+- interviewChance: realistic 0-100 score based on genuine overlap between qualifications and job requirements.
+- jobTitle: extract the job title from the job description (short, e.g. "Software Engineer").
+- company: extract the hiring company name from the job description. Use "Unknown" if not stated.
+- matchedKeywords / missingKeywords / suggestions / reasoning: be honest and calibrated.
+
+Respond ONLY with JSON that conforms to the provided schema.`
+
+const FIT_ONLY_SYSTEM_INSTRUCTION = `You are an expert technical recruiter with deep knowledge of Applicant Tracking Systems (ATS).
+
+Your task: analyze how well the candidate's CURRENT resume (without rewriting it) matches the job description, and estimate their realistic chance (0-100) of landing an interview.
+
+Do NOT rewrite or generate a resume — analysis only.
+
+Scoring rules:
+- interviewChance: realistic 0-100 based on genuine overlap between the candidate's real qualifications and the job's hard requirements (years of experience, must-have skills, seniority, domain). Be calibrated, not flattering.
+- jobTitle: extract the job title from the job description (short, e.g. "Software Engineer").
+- company: extract the hiring company name from the job description. Use "Unknown" if not stated.
+- matchedKeywords: important job-description keywords the candidate's resume already supports.
 - missingKeywords: important job-description keywords the candidate is missing or weak on.
-- suggestions: concrete, honest actions the candidate could take to improve their odds.
+- suggestions: concrete, honest actions to improve their odds.
+- reasoning: one paragraph explaining the score.
 
 Respond ONLY with JSON that conforms to the provided schema.`
 
@@ -153,8 +185,8 @@ export interface GeminiError extends Error {
   status?: number
 }
 
-function buildPrompt(jobDescription: string, currentResume: string): string {
-  return `JOB DESCRIPTION:
+function buildPrompt(jobDescription: string, currentResume: string, mode: GenerationMode): string {
+  const base = `JOB DESCRIPTION:
 """
 ${jobDescription.trim()}
 """
@@ -162,17 +194,29 @@ ${jobDescription.trim()}
 CANDIDATE'S CURRENT RESUME:
 """
 ${currentResume.trim()}
-"""
+"""`
+
+  if (mode === 'fit-only') {
+    return `${base}
+
+Analyze the fit between this resume and job description. Return the interview analysis as JSON. Do NOT include a rewritten resume.`
+  }
+
+  return `${base}
 
 Produce the tailored resume and interview analysis as JSON.`
 }
 
-function extractUsage(raw: unknown): TokenUsage {
+function extractUsage(raw: unknown, model: string): TokenUsage {
   const meta = (raw as { usageMetadata?: Record<string, number> })?.usageMetadata ?? {}
+  const promptTokens = meta.promptTokenCount ?? 0
+  const outputTokens = meta.candidatesTokenCount ?? 0
+  const totalTokens = meta.totalTokenCount ?? 0
   return {
-    promptTokens: meta.promptTokenCount ?? 0,
-    outputTokens: meta.candidatesTokenCount ?? 0,
-    totalTokens: meta.totalTokenCount ?? 0,
+    promptTokens,
+    outputTokens,
+    totalTokens,
+    estimatedCostUsd: estimateTokenCost(model, promptTokens, outputTokens),
   }
 }
 
@@ -204,28 +248,45 @@ function extractText(raw: unknown): string {
   return text
 }
 
+function normalizeAnalysis(analysis: InterviewAnalysis): InterviewAnalysis {
+  return {
+    ...analysis,
+    interviewChance: Math.max(0, Math.min(100, Math.round(analysis.interviewChance ?? 0))),
+    jobTitle: analysis.jobTitle?.trim() || 'Job',
+    company: analysis.company?.trim() || 'Unknown',
+  }
+}
+
 export async function generateTailoredResume(
   settings: Settings,
   jobDescription: string,
   currentResume: string,
+  mode: GenerationMode = 'full',
   signal?: AbortSignal,
 ): Promise<GenerationResult> {
   if (!settings.apiKey) {
     throw new Error('Add your Gemini API key in Settings first.')
   }
 
+  const isFitOnly = mode === 'fit-only'
   const url = `${API_BASE}/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(
     settings.apiKey,
   )}`
 
+  const maxOutputTokens = isFitOnly
+    ? Math.min(settings.maxOutputTokens, 2048)
+    : settings.maxOutputTokens
+
   const body = {
-    systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-    contents: [{ role: 'user', parts: [{ text: buildPrompt(jobDescription, currentResume) }] }],
+    systemInstruction: {
+      parts: [{ text: isFitOnly ? FIT_ONLY_SYSTEM_INSTRUCTION : FULL_SYSTEM_INSTRUCTION }],
+    },
+    contents: [{ role: 'user', parts: [{ text: buildPrompt(jobDescription, currentResume, mode) }] }],
     generationConfig: {
       temperature: settings.temperature,
-      maxOutputTokens: settings.maxOutputTokens,
+      maxOutputTokens,
       responseMimeType: 'application/json',
-      responseSchema,
+      responseSchema: isFitOnly ? fitOnlyResponseSchema : fullResponseSchema,
     },
   }
 
@@ -254,21 +315,30 @@ export async function generateTailoredResume(
   }
 
   const text = extractText(raw)
-  const usage = extractUsage(raw)
+  const usage = extractUsage(raw, settings.model)
 
-  let parsed: { resume: TailoredResume; analysis: InterviewAnalysis }
   try {
-    parsed = JSON.parse(text)
+    const parsed = JSON.parse(text)
+
+    if (isFitOnly) {
+      return {
+        mode: 'fit-only',
+        resume: null,
+        analysis: normalizeAnalysis(parsed.analysis as InterviewAnalysis),
+        usage,
+      }
+    }
+
+    const full = parsed as { resume: TailoredResume; analysis: InterviewAnalysis }
+    return {
+      mode: 'full',
+      resume: full.resume,
+      analysis: normalizeAnalysis(full.analysis),
+      usage,
+    }
   } catch {
     throw new Error('Gemini returned malformed JSON. Try again or lower the temperature in Settings.')
   }
-
-  parsed.analysis.interviewChance = Math.max(
-    0,
-    Math.min(100, Math.round(parsed.analysis.interviewChance ?? 0)),
-  )
-
-  return { resume: parsed.resume, analysis: parsed.analysis, usage }
 }
 
 function humanizeError(status: number, message: string): string {

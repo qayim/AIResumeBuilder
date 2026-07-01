@@ -9,6 +9,7 @@ import {
 } from 'docx'
 import { saveAs } from 'file-saver'
 import type { TailoredResume } from '../types'
+import { buildResumeFileName } from './pricing'
 
 const ACCENT = '1E40F5'
 const MUTED = '475569'
@@ -206,13 +207,16 @@ export function buildResumeDocument(resume: TailoredResume): Document {
   })
 }
 
-function safeFileName(name: string): string {
-  const base = (name || 'resume').trim().replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')
-  return `${base || 'resume'}_tailored.docx`
+function safeFileName(jobTitle: string, company: string, userName: string): string {
+  return buildResumeFileName(jobTitle, company, userName)
 }
 
-export async function downloadResumeDocx(resume: TailoredResume): Promise<void> {
+export async function downloadResumeDocx(
+  resume: TailoredResume,
+  jobTitle: string,
+  company: string,
+): Promise<void> {
   const doc = buildResumeDocument(resume)
   const blob = await Packer.toBlob(doc)
-  saveAs(blob, safeFileName(resume.contact?.fullName))
+  saveAs(blob, safeFileName(jobTitle, company, resume.contact?.fullName ?? 'User'))
 }

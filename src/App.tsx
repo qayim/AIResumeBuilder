@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GenerationResult, Settings } from './types'
+import type { GenerationMode, GenerationResult, Settings } from './types'
 import { loadSettings, saveSettings } from './lib/storage'
 import { AVAILABLE_MODELS, generateTailoredResume } from './lib/gemini'
 import { downloadResumeDocx } from './lib/docx'
@@ -13,6 +13,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [jobDescription, setJobDescription] = useState('')
   const [currentResume, setCurrentResume] = useState('')
+  const [fitOnly, setFitOnly] = useState(false)
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,11 +37,13 @@ export default function App() {
     setLoading(true)
     const controller = new AbortController()
     abortRef.current = controller
+    const mode: GenerationMode = fitOnly ? 'fit-only' : 'full'
     try {
       const res = await generateTailoredResume(
         settings,
         jobDescription,
         currentResume,
+        mode,
         controller.signal,
       )
       setResult(res)
@@ -57,10 +60,14 @@ export default function App() {
   const handleCancel = () => abortRef.current?.abort()
 
   const handleDownload = async () => {
-    if (!result) return
+    if (!result?.resume) return
     setDownloading(true)
     try {
-      await downloadResumeDocx(result.resume)
+      await downloadResumeDocx(
+        result.resume,
+        result.analysis.jobTitle,
+        result.analysis.company,
+      )
     } catch {
       setError('Failed to generate the .docx file. Please try again.')
     } finally {
@@ -103,7 +110,8 @@ export default function App() {
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
             Paste a job description and your current resume. Gemini rewrites it to match the role,
-            estimates your interview chances, and exports a polished <code>.docx</code>.
+            estimates your interview chances, and exports a polished <code>.docx</code>. Or toggle
+            fit-check only to save tokens.
           </p>
         </div>
 
@@ -128,10 +136,12 @@ export default function App() {
           <ResumeForm
             jobDescription={jobDescription}
             currentResume={currentResume}
+            fitOnly={fitOnly}
             loading={loading}
             hasApiKey={Boolean(settings.apiKey)}
             onJobDescriptionChange={setJobDescription}
             onCurrentResumeChange={setCurrentResume}
+            onFitOnlyChange={setFitOnly}
             onGenerate={handleGenerate}
             onCancel={handleCancel}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -141,7 +151,9 @@ export default function App() {
             <div className="card flex flex-col items-center justify-center gap-3 p-12 text-center">
               <div className="h-10 w-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />
               <p className="text-sm font-medium text-slate-700">
-                Gemini is tailoring your resume and scoring your match…
+                {fitOnly
+                  ? 'Gemini is analyzing your fit for this role…'
+                  : 'Gemini is tailoring your resume and scoring your match…'}
               </p>
               <p className="text-xs text-slate-400">This usually takes 5–20 seconds.</p>
             </div>
