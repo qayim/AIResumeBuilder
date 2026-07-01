@@ -134,12 +134,6 @@ const resumeOnlyResponseSchema = {
   required: ['resume'],
 }
 
-const fitOnlyResponseSchema = {
-  type: 'OBJECT',
-  properties: { analysis: analysisSchema },
-  required: ['analysis'],
-}
-
 const RESUME_ONLY_INSTRUCTION = `You are an expert resume writer specializing in ATS-optimized resumes.
 
 Rewrite the candidate's resume so it is tailored to the job description. Return ONLY the tailored resume as JSON — no interview analysis.
@@ -156,6 +150,15 @@ Strict rules:
 
 Respond ONLY with JSON conforming to the schema.`
 
+const ANALYSIS_COMPACT_RULES = `
+Keep analysis output SHORT to fit token limits:
+- matchedKeywords: max 8 items, short phrases only
+- missingKeywords: max 8 items
+- suggestions: max 4 items, under 15 words each
+- reasoning: one paragraph, max 60 words
+- verdict: max 5 words (e.g. "Strong match", "Moderate fit")
+`
+
 const FIT_ONLY_INSTRUCTION = `You are an expert technical recruiter with deep ATS knowledge.
 
 Analyze how well the candidate's resume matches the job description. Estimate realistic interview chance (0-100).
@@ -167,6 +170,7 @@ Scoring rules:
 - jobTitle: short title from the job description (e.g. "Software Engineer").
 - company: hiring company name, or "Unknown" if not stated.
 - matchedKeywords / missingKeywords / suggestions / reasoning: honest and specific.
+${ANALYSIS_COMPACT_RULES}
 
 Respond ONLY with JSON conforming to the schema.`
 
@@ -180,6 +184,7 @@ Scoring rules:
 - interviewChance: score reflects THIS tailored resume, not the original.
 - jobTitle / company: extract from the job description.
 - matchedKeywords / missingKeywords / suggestions / reasoning: be honest and calibrated.
+${ANALYSIS_COMPACT_RULES}
 
 Respond ONLY with JSON conforming to the schema.`
 
@@ -194,15 +199,21 @@ function outputLimit(model: string, requested: number): number {
   return Math.min(Math.max(requested, 1024), cap)
 }
 
+function truncateInput(text: string, maxChars: number): string {
+  const t = text.trim()
+  if (t.length <= maxChars) return t
+  return `${t.slice(0, maxChars)}\n...[truncated]`
+}
+
 function buildInputs(jobDescription: string, resumeText: string) {
   return `JOB DESCRIPTION:
 """
-${jobDescription.trim()}
+${truncateInput(jobDescription, 10000)}
 """
 
 RESUME:
 """
-${resumeText.trim()}
+${truncateInput(resumeText, 8000)}
 """`
 }
 
@@ -303,13 +314,13 @@ function coerceAnalysis(value: unknown): InterviewAnalysis {
     jobTitle: String(value.jobTitle ?? ''),
     company: String(value.company ?? ''),
     matchedKeywords: Array.isArray(value.matchedKeywords)
-      ? value.matchedKeywords.map(String)
+      ? value.matchedKeywords.map(String).slice(0, 12)
       : [],
     missingKeywords: Array.isArray(value.missingKeywords)
-      ? value.missingKeywords.map(String)
+      ? value.missingKeywords.map(String).slice(0, 12)
       : [],
-    suggestions: Array.isArray(value.suggestions) ? value.suggestions.map(String) : [],
-    reasoning: String(value.reasoning ?? ''),
+    suggestions: Array.isArray(value.suggestions) ? value.suggestions.map(String).slice(0, 6) : [],
+    reasoning: String(value.reasoning ?? '').slice(0, 600),
   }
 }
 
@@ -395,18 +406,24 @@ function parseResumeResponse(text: string, finishReason?: string): TailoredResum
   return coerceResume(source)
 }
 
-function resumeToPlainText(resume: TailoredResume): string {
-  const lines: string[] = []
-  const c = resume.contact
-  lines.push(c.fullName, c.title)
-  lines.push([c.email, c.phone, c.location].filter(Boolean).join(' | '))
-  if (resume.summary) lines.push('', resume.summary)
-  for (const e of resume.experience) {
-    lines.push('', `${e.role} at ${e.company}`)
-    for (const b of e.bullets ?? []) lines.push(`- ${b}`)
-  }
-  for (const g of resume.skills) lines.push('', `${g.category}: ${g.skills.join(', ')}`)
-  return lines.join('\n')
+function resumeToAnalysisSummary(resume: TailoredResume): string {
+  const skillList = resume.skills
+    .flatMap((g) => g.skills)
+    .slice(0, 20)
+    .join(', ')
+  const jobs = resume.experience
+    .slice(0, 6)
+    .map((e) => `${e.role} @ ${e.company} (${(e.bullets ?? []).length} bullets)`)
+    .join('; ')
+  return [
+    `Name: ${resume.contact.fullName}`,
+    `Target title: ${resume.contact.title}`,
+    `Summary: ${resume.summary.slice(0, 400)}`,
+    skillList ? `Skills: ${skillList}` : '',
+    jobs ? `Experience: ${jobs}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 async function callGemini(
@@ -457,17 +474,21 @@ function requestBody(
   concise = false,
 ): Record<string, unknown> {
   const instructions: Record<RequestKind, string> = {
-    'fit-only': FIT_ONLY_INSTRUCTION,
+    'fit-only': concise
+      ? `${FIT_ONLY_INSTRUCTION}\n\nBe extremely brief — half the normal length.`
+      : FIT_ONLY_INSTRUCTION,
     'resume-only': concise
       ? `${RESUME_ONLY_INSTRUCTION}\n\nIMPORTANT: Prior pass was too long. Be extra concise — max 3 bullets per job, shorter summary.`
       : RESUME_ONLY_INSTRUCTION,
-    'tailored-analysis': TAILORED_ANALYSIS_INSTRUCTION,
+    'tailored-analysis': concise
+      ? `${TAILORED_ANALYSIS_INSTRUCTION}\n\nBe extremely brief — half the normal length.`
+      : TAILORED_ANALYSIS_INSTRUCTION,
   }
 
   const schemas: Record<RequestKind, unknown> = {
-    'fit-only': fitOnlyResponseSchema,
+    'fit-only': analysisSchema,
     'resume-only': resumeOnlyResponseSchema,
-    'tailored-analysis': fitOnlyResponseSchema,
+    'tailored-analysis': analysisSchema,
   }
 
   return {
@@ -550,19 +571,38 @@ async function generateAnalysisStep(
   kind: 'fit-only' | 'tailored-analysis',
   signal?: AbortSignal,
 ): Promise<{ analysis: InterviewAnalysis; usage: TokenUsage }> {
-  const maxTokens = kind === 'fit-only' ? 2048 : 2048
-  const { raw, text, finishReason } = await runRequest(
-    settings,
-    kind,
-    jobDescription,
-    resumeText,
-    maxTokens,
-    signal,
-  )
-  return {
-    analysis: parseAnalysisResponse(text, finishReason),
-    usage: extractUsage(raw, settings.model),
+  const maxTokens = outputLimit(settings.model, 4096)
+  let totalUsage: TokenUsage = {
+    promptTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    estimatedCostUsd: 0,
   }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { raw, text, finishReason } = await runRequest(
+      settings,
+      kind,
+      jobDescription,
+      resumeText,
+      maxTokens,
+      signal,
+      attempt === 1,
+    )
+    totalUsage = mergeUsage(totalUsage, extractUsage(raw, settings.model))
+
+    try {
+      const analysis = parseAnalysisResponse(text, finishReason)
+      return { analysis, usage: totalUsage }
+    } catch (err) {
+      if (attempt === 1) throw err
+      if (finishReason !== 'MAX_TOKENS' && !/malformed analysis JSON/i.test((err as Error).message)) {
+        throw err
+      }
+    }
+  }
+
+  throw new Error('Analysis could not be completed. Please try again or use Fit check only mode.')
 }
 
 export async function generateTailoredResume(
@@ -601,11 +641,11 @@ export async function generateTailoredResume(
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
   onProgress?.('Step 2 of 2 — Scoring interview fit…')
-  const tailoredText = resumeToPlainText(resume)
+  const summaryText = resumeToAnalysisSummary(resume)
   const { analysis, usage: analysisUsage } = await generateAnalysisStep(
     settings,
     jobDescription,
-    tailoredText,
+    summaryText,
     'tailored-analysis',
     signal,
   )
