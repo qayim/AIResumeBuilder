@@ -15,6 +15,7 @@ export default function App() {
   const [currentResume, setCurrentResume] = useState('')
   const [fitOnly, setFitOnly] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadingMessage, setLoadingMessage] = useState('')
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<GenerationResult | null>(null)
@@ -35,6 +36,7 @@ export default function App() {
     setError(null)
     setResult(null)
     setLoading(true)
+    setLoadingMessage(fitOnly ? 'Analyzing interview fit…' : 'Step 1 of 2 — Tailoring your resume…')
     const controller = new AbortController()
     abortRef.current = controller
     const mode: GenerationMode = fitOnly ? 'fit-only' : 'full'
@@ -45,6 +47,7 @@ export default function App() {
         currentResume,
         mode,
         controller.signal,
+        setLoadingMessage,
       )
       setResult(res)
     } catch (err) {
@@ -53,6 +56,7 @@ export default function App() {
       }
     } finally {
       setLoading(false)
+      setLoadingMessage('')
       abortRef.current = null
     }
   }
@@ -151,11 +155,13 @@ export default function App() {
             <div className="card flex flex-col items-center justify-center gap-3 p-12 text-center">
               <div className="h-10 w-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />
               <p className="text-sm font-medium text-slate-700">
-                {fitOnly
+                {loadingMessage || (fitOnly
                   ? 'Gemini is analyzing your fit for this role…'
-                  : 'Gemini is tailoring your resume and scoring your match…'}
+                  : 'Gemini is tailoring your resume and scoring your match…')}
               </p>
-              <p className="text-xs text-slate-400">This usually takes 5–20 seconds.</p>
+              <p className="text-xs text-slate-400">
+                {fitOnly ? 'This usually takes 5–15 seconds.' : 'Two quick steps — usually 15–30 seconds.'}
+              </p>
             </div>
           ) : null}
 

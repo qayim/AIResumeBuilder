@@ -241,7 +241,7 @@ export default function ResultsView({ result, downloading, onDownload }: Props) 
           </div>
         </div>
         <p className="mt-2 text-[10px] text-slate-400">
-          Cost is estimated from published Gemini pricing. Free-tier keys may not be billed.
+          Cost is estimated from published Gemini pricing. Full mode uses 2 API calls; totals are combined.
         </p>
       </div>
     </div>

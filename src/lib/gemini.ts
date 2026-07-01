@@ -11,6 +11,18 @@ import { isRecord, parseJsonText } from './jsonParse'
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
+/** Per-model output token ceiling (API limits). */
+const MODEL_MAX_OUTPUT: Record<string, number> = {
+  'gemini-2.0-flash': 8192,
+  'gemini-2.0-flash-lite': 8192,
+  'gemini-2.5-flash': 65536,
+  'gemini-2.5-pro': 65536,
+  'gemini-1.5-flash': 8192,
+  'gemini-1.5-pro': 8192,
+}
+
+export type ProgressCallback = (message: string) => void
+
 /** Models the user can pick from in Settings. */
 export const AVAILABLE_MODELS = [
   { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (fast, cheap)' },
@@ -22,6 +34,75 @@ export const AVAILABLE_MODELS = [
 ]
 
 const stringArray = { type: 'ARRAY', items: { type: 'STRING' } }
+
+const resumeObjectSchema = {
+  type: 'OBJECT',
+  properties: {
+    contact: {
+      type: 'OBJECT',
+      properties: {
+        fullName: { type: 'STRING' },
+        title: { type: 'STRING' },
+        email: { type: 'STRING' },
+        phone: { type: 'STRING' },
+        location: { type: 'STRING' },
+        links: stringArray,
+      },
+    },
+    summary: { type: 'STRING' },
+    skills: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          category: { type: 'STRING' },
+          skills: stringArray,
+        },
+        required: ['category', 'skills'],
+      },
+    },
+    experience: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          company: { type: 'STRING' },
+          role: { type: 'STRING' },
+          location: { type: 'STRING' },
+          startDate: { type: 'STRING' },
+          endDate: { type: 'STRING' },
+          bullets: stringArray,
+        },
+      },
+    },
+    education: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          institution: { type: 'STRING' },
+          degree: { type: 'STRING' },
+          location: { type: 'STRING' },
+          startDate: { type: 'STRING' },
+          endDate: { type: 'STRING' },
+          details: stringArray,
+        },
+      },
+    },
+    certifications: stringArray,
+    projects: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING' },
+          description: { type: 'STRING' },
+        },
+      },
+    },
+  },
+  required: ['contact', 'summary', 'skills', 'experience', 'education'],
+}
 
 const analysisSchema = {
   type: 'OBJECT',
@@ -47,153 +128,106 @@ const analysisSchema = {
   ],
 }
 
-const fullResponseSchema = {
+const resumeOnlyResponseSchema = {
   type: 'OBJECT',
-  properties: {
-    resume: {
-      type: 'OBJECT',
-      properties: {
-        contact: {
-          type: 'OBJECT',
-          properties: {
-            fullName: { type: 'STRING' },
-            title: { type: 'STRING' },
-            email: { type: 'STRING' },
-            phone: { type: 'STRING' },
-            location: { type: 'STRING' },
-            links: stringArray,
-          },
-        },
-        summary: { type: 'STRING' },
-        skills: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              category: { type: 'STRING' },
-              skills: stringArray,
-            },
-            required: ['category', 'skills'],
-          },
-        },
-        experience: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              company: { type: 'STRING' },
-              role: { type: 'STRING' },
-              location: { type: 'STRING' },
-              startDate: { type: 'STRING' },
-              endDate: { type: 'STRING' },
-              bullets: stringArray,
-            },
-          },
-        },
-        education: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              institution: { type: 'STRING' },
-              degree: { type: 'STRING' },
-              location: { type: 'STRING' },
-              startDate: { type: 'STRING' },
-              endDate: { type: 'STRING' },
-              details: stringArray,
-            },
-          },
-        },
-        certifications: stringArray,
-        projects: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              name: { type: 'STRING' },
-              description: { type: 'STRING' },
-            },
-          },
-        },
-      },
-      required: ['contact', 'summary', 'skills', 'experience', 'education'],
-    },
-    analysis: analysisSchema,
-  },
-  required: ['resume', 'analysis'],
+  properties: { resume: resumeObjectSchema },
+  required: ['resume'],
 }
 
 const fitOnlyResponseSchema = {
   type: 'OBJECT',
-  properties: {
-    analysis: analysisSchema,
-  },
+  properties: { analysis: analysisSchema },
   required: ['analysis'],
 }
 
-const FULL_SYSTEM_INSTRUCTION = `You are an expert technical recruiter and professional resume writer with deep knowledge of Applicant Tracking Systems (ATS).
+const RESUME_ONLY_INSTRUCTION = `You are an expert resume writer specializing in ATS-optimized resumes.
 
-Your task:
-1. Rewrite the candidate's resume so it is tailored to the provided job description.
-2. Estimate the candidate's realistic chance (0-100) of landing an interview WITH the tailored resume.
+Rewrite the candidate's resume so it is tailored to the job description. Return ONLY the tailored resume as JSON — no interview analysis.
 
-Strict rules for tailoring:
-- NEVER invent experience, employers, dates, degrees, or skills the candidate does not have. Only rephrase, reorder, and emphasize what is genuinely supported by the original resume.
-- Mirror the language and keywords of the job description where the candidate genuinely qualifies, to maximize ATS keyword matching.
-- Write achievement-oriented bullet points starting with strong action verbs; quantify impact when the original resume provides numbers.
-- Keep the summary concise (2-4 sentences) and targeted at the role.
-- Group skills into sensible categories and prioritize skills relevant to the job description.
-- If a field is unknown, use an empty string or empty array rather than guessing.
+Strict rules:
+- NEVER invent experience, employers, dates, degrees, or skills the candidate does not have.
+- Mirror job-description keywords where the candidate genuinely qualifies.
+- Use strong action verbs; quantify impact when numbers exist in the original.
+- Keep the summary to 2-3 sentences (under 70 words).
+- Max 4 bullet points per experience entry; keep each bullet under 25 words.
+- Max 3 skill categories; list only the most relevant skills.
+- Include projects and certifications only if present in the original resume.
+- If a field is unknown, use an empty string or empty array.
 
-Scoring rules for analysis:
-- interviewChance: realistic 0-100 score based on genuine overlap between qualifications and job requirements.
-- jobTitle: extract the job title from the job description (short, e.g. "Software Engineer").
-- company: extract the hiring company name from the job description. Use "Unknown" if not stated.
-- matchedKeywords / missingKeywords / suggestions / reasoning: be honest and calibrated.
+Respond ONLY with JSON conforming to the schema.`
 
-Respond ONLY with JSON that conforms to the provided schema.`
+const FIT_ONLY_INSTRUCTION = `You are an expert technical recruiter with deep ATS knowledge.
 
-const FIT_ONLY_SYSTEM_INSTRUCTION = `You are an expert technical recruiter with deep knowledge of Applicant Tracking Systems (ATS).
+Analyze how well the candidate's resume matches the job description. Estimate realistic interview chance (0-100).
 
-Your task: analyze how well the candidate's CURRENT resume (without rewriting it) matches the job description, and estimate their realistic chance (0-100) of landing an interview.
-
-Do NOT rewrite or generate a resume — analysis only.
+Do NOT rewrite the resume — analysis only.
 
 Scoring rules:
-- interviewChance: realistic 0-100 based on genuine overlap between the candidate's real qualifications and the job's hard requirements (years of experience, must-have skills, seniority, domain). Be calibrated, not flattering.
-- jobTitle: extract the job title from the job description (short, e.g. "Software Engineer").
-- company: extract the hiring company name from the job description. Use "Unknown" if not stated.
-- matchedKeywords: important job-description keywords the candidate's resume already supports.
-- missingKeywords: important job-description keywords the candidate is missing or weak on.
-- suggestions: concrete, honest actions to improve their odds.
-- reasoning: one paragraph explaining the score.
+- interviewChance: calibrated 0-100 based on genuine qualification overlap.
+- jobTitle: short title from the job description (e.g. "Software Engineer").
+- company: hiring company name, or "Unknown" if not stated.
+- matchedKeywords / missingKeywords / suggestions / reasoning: honest and specific.
 
-Respond ONLY with JSON that conforms to the provided schema.`
+Respond ONLY with JSON conforming to the schema.`
+
+const TAILORED_ANALYSIS_INSTRUCTION = `You are an expert technical recruiter with deep ATS knowledge.
+
+Analyze how well the TAILORED resume matches the job description. Estimate the candidate's realistic chance (0-100) of landing an interview WITH this tailored resume.
+
+Do NOT rewrite the resume — analysis only.
+
+Scoring rules:
+- interviewChance: score reflects THIS tailored resume, not the original.
+- jobTitle / company: extract from the job description.
+- matchedKeywords / missingKeywords / suggestions / reasoning: be honest and calibrated.
+
+Respond ONLY with JSON conforming to the schema.`
 
 export interface GeminiError extends Error {
   status?: number
 }
 
-function buildPrompt(jobDescription: string, currentResume: string, mode: GenerationMode): string {
-  const base = `JOB DESCRIPTION:
+type RequestKind = 'fit-only' | 'resume-only' | 'tailored-analysis'
+
+function outputLimit(model: string, requested: number): number {
+  const cap = MODEL_MAX_OUTPUT[model] ?? 8192
+  return Math.min(Math.max(requested, 1024), cap)
+}
+
+function buildInputs(jobDescription: string, resumeText: string) {
+  return `JOB DESCRIPTION:
 """
 ${jobDescription.trim()}
 """
 
-CANDIDATE'S CURRENT RESUME:
+RESUME:
 """
-${currentResume.trim()}
+${resumeText.trim()}
 """`
+}
 
-  if (mode === 'fit-only') {
+function buildPrompt(
+  jobDescription: string,
+  resumeText: string,
+  kind: RequestKind,
+): string {
+  const base = buildInputs(jobDescription, resumeText)
+
+  if (kind === 'fit-only') {
     return `${base}
 
-Analyze the fit between this resume and job description. Return the interview analysis as JSON. Do NOT include a rewritten resume.`
+Analyze fit between this resume and job description. Return interview analysis JSON only.`
+  }
+
+  if (kind === 'resume-only') {
+    return `${base}
+
+Produce the tailored resume as JSON only. Keep output compact to stay within token limits.`
   }
 
   return `${base}
 
-Produce the tailored resume and interview analysis as JSON.`
+This is the TAILORED resume (already rewritten for the role). Analyze interview fit and return analysis JSON only.`
 }
 
 function extractUsage(raw: unknown, model: string): TokenUsage {
@@ -206,6 +240,15 @@ function extractUsage(raw: unknown, model: string): TokenUsage {
     outputTokens,
     totalTokens,
     estimatedCostUsd: estimateTokenCost(model, promptTokens, outputTokens),
+  }
+}
+
+function mergeUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    promptTokens: a.promptTokens + b.promptTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
   }
 }
 
@@ -230,7 +273,7 @@ function extractText(raw: unknown): { text: string; finishReason?: string } {
   if (!text) {
     if (finishReason === 'MAX_TOKENS') {
       throw new Error(
-        'Gemini hit the max output token limit before finishing. Increase "Max output tokens" in Settings and try again.',
+        'Gemini hit the max output token limit. Try Fit check only mode, or shorten your resume input.',
       )
     }
     throw new Error('Gemini returned an empty response. Try again or switch models.')
@@ -270,11 +313,19 @@ function coerceAnalysis(value: unknown): InterviewAnalysis {
   }
 }
 
+function trimBullets(items: { bullets?: string[] }[], max: number) {
+  for (const item of items) {
+    if (Array.isArray(item.bullets) && item.bullets.length > max) {
+      item.bullets = item.bullets.slice(0, max)
+    }
+  }
+}
+
 function coerceResume(value: unknown): TailoredResume {
   if (!isRecord(value)) return emptyResume()
 
   const contact = isRecord(value.contact) ? value.contact : {}
-  return {
+  const resume: TailoredResume = {
     contact: {
       fullName: String(contact.fullName ?? ''),
       title: String(contact.title ?? ''),
@@ -284,7 +335,7 @@ function coerceResume(value: unknown): TailoredResume {
       links: Array.isArray(contact.links) ? contact.links.map(String) : [],
     },
     summary: String(value.summary ?? ''),
-    skills: Array.isArray(value.skills) ? (value.skills as TailoredResume['skills']) : [],
+    skills: Array.isArray(value.skills) ? (value.skills as TailoredResume['skills']).slice(0, 4) : [],
     experience: Array.isArray(value.experience)
       ? (value.experience as TailoredResume['experience'])
       : [],
@@ -292,56 +343,70 @@ function coerceResume(value: unknown): TailoredResume {
       ? (value.education as TailoredResume['education'])
       : [],
     certifications: Array.isArray(value.certifications)
-      ? value.certifications.map(String)
+      ? value.certifications.map(String).slice(0, 10)
       : [],
-    projects: Array.isArray(value.projects) ? (value.projects as TailoredResume['projects']) : [],
+    projects: Array.isArray(value.projects)
+      ? (value.projects as TailoredResume['projects']).slice(0, 5)
+      : [],
   }
+
+  trimBullets(resume.experience, 4)
+  return resume
 }
 
-function parseModelResponse(
-  text: string,
-  finishReason: string | undefined,
-  mode: GenerationMode,
-): Omit<GenerationResult, 'usage'> {
+function parseAnalysisResponse(text: string, finishReason?: string): InterviewAnalysis {
+  let parsed: unknown
+  try {
+    parsed = parseJsonText(text)
+  } catch {
+    if (finishReason === 'MAX_TOKENS') {
+      throw new Error('Analysis response was cut off. Please try again.')
+    }
+    throw new Error('Gemini returned malformed analysis JSON. Please try again.')
+  }
+
+  if (!isRecord(parsed)) {
+    throw new Error('Gemini returned an unexpected analysis shape.')
+  }
+
+  const source =
+    'analysis' in parsed && isRecord(parsed.analysis) ? parsed.analysis : parsed
+  return normalizeAnalysis(coerceAnalysis(source))
+}
+
+function parseResumeResponse(text: string, finishReason?: string): TailoredResume {
   let parsed: unknown
   try {
     parsed = parseJsonText(text)
   } catch {
     if (finishReason === 'MAX_TOKENS') {
       throw new Error(
-        'Gemini ran out of output tokens and the response was cut off. Increase "Max output tokens" in Settings (try 16384) or use Fit check only mode.',
+        'Resume output was cut off — your resume may be too long for one pass. Try shortening your input, or use Fit check only mode first.',
       )
     }
-    throw new Error(
-      'Gemini returned malformed JSON. Try again, switch to Gemini 2.0 Flash in Settings, or use Fit check only mode.',
-    )
+    throw new Error('Gemini returned malformed resume JSON. Please try again.')
   }
 
   if (!isRecord(parsed)) {
-    throw new Error('Gemini returned an unexpected response shape. Please try again.')
+    throw new Error('Gemini returned an unexpected resume shape.')
   }
 
-  if (mode === 'fit-only') {
-    const analysisSource =
-      'analysis' in parsed && isRecord(parsed.analysis) ? parsed.analysis : parsed
-    return {
-      mode: 'fit-only',
-      resume: null,
-      analysis: normalizeAnalysis(coerceAnalysis(analysisSource)),
-    }
-  }
+  const source = 'resume' in parsed ? parsed.resume : parsed
+  return coerceResume(source)
+}
 
-  if (!('resume' in parsed) || !('analysis' in parsed)) {
-    throw new Error(
-      'Gemini response is missing resume or analysis fields. Try again or increase max output tokens.',
-    )
+function resumeToPlainText(resume: TailoredResume): string {
+  const lines: string[] = []
+  const c = resume.contact
+  lines.push(c.fullName, c.title)
+  lines.push([c.email, c.phone, c.location].filter(Boolean).join(' | '))
+  if (resume.summary) lines.push('', resume.summary)
+  for (const e of resume.experience) {
+    lines.push('', `${e.role} at ${e.company}`)
+    for (const b of e.bullets ?? []) lines.push(`- ${b}`)
   }
-
-  return {
-    mode: 'full',
-    resume: coerceResume(parsed.resume),
-    analysis: normalizeAnalysis(coerceAnalysis(parsed.analysis)),
-  }
+  for (const g of resume.skills) lines.push('', `${g.category}: ${g.skills.join(', ')}`)
+  return lines.join('\n')
 }
 
 async function callGemini(
@@ -378,7 +443,62 @@ async function callGemini(
   }
 
   const { text, finishReason } = extractText(raw)
+  if (finishReason === 'MAX_TOKENS') {
+    // Still attempt parse — may partially succeed on retry path
+  }
   return { raw, text, finishReason }
+}
+
+function requestBody(
+  settings: Settings,
+  kind: RequestKind,
+  prompt: string,
+  maxOutputTokens: number,
+  concise = false,
+): Record<string, unknown> {
+  const instructions: Record<RequestKind, string> = {
+    'fit-only': FIT_ONLY_INSTRUCTION,
+    'resume-only': concise
+      ? `${RESUME_ONLY_INSTRUCTION}\n\nIMPORTANT: Prior pass was too long. Be extra concise — max 3 bullets per job, shorter summary.`
+      : RESUME_ONLY_INSTRUCTION,
+    'tailored-analysis': TAILORED_ANALYSIS_INSTRUCTION,
+  }
+
+  const schemas: Record<RequestKind, unknown> = {
+    'fit-only': fitOnlyResponseSchema,
+    'resume-only': resumeOnlyResponseSchema,
+    'tailored-analysis': fitOnlyResponseSchema,
+  }
+
+  return {
+    systemInstruction: { parts: [{ text: instructions[kind] }] },
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: concise ? Math.min(settings.temperature, 0.2) : settings.temperature,
+      maxOutputTokens,
+      responseMimeType: 'application/json',
+      responseSchema: schemas[kind],
+    },
+  }
+}
+
+async function runRequest(
+  settings: Settings,
+  kind: RequestKind,
+  jobDescription: string,
+  resumeText: string,
+  maxOutputTokens: number,
+  signal?: AbortSignal,
+  concise = false,
+): Promise<{ raw: unknown; text: string; finishReason?: string }> {
+  const body = requestBody(
+    settings,
+    kind,
+    buildPrompt(jobDescription, resumeText, kind),
+    maxOutputTokens,
+    concise,
+  )
+  return callGemini(settings, body, signal)
 }
 
 function normalizeAnalysis(analysis: InterviewAnalysis): InterviewAnalysis {
@@ -390,69 +510,112 @@ function normalizeAnalysis(analysis: InterviewAnalysis): InterviewAnalysis {
   }
 }
 
+async function generateResumeStep(
+  settings: Settings,
+  jobDescription: string,
+  currentResume: string,
+  signal?: AbortSignal,
+): Promise<{ resume: TailoredResume; usage: TokenUsage }> {
+  const maxTokens = outputLimit(settings.model, settings.maxOutputTokens)
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { raw, text, finishReason } = await runRequest(
+      settings,
+      'resume-only',
+      jobDescription,
+      currentResume,
+      maxTokens,
+      signal,
+      attempt === 1,
+    )
+
+    try {
+      const resume = parseResumeResponse(text, finishReason)
+      if (finishReason === 'MAX_TOKENS' && attempt === 0) continue
+      return { resume, usage: extractUsage(raw, settings.model) }
+    } catch (err) {
+      if (attempt === 1 || finishReason !== 'MAX_TOKENS') throw err
+    }
+  }
+
+  throw new Error(
+    'Could not generate a complete resume within token limits. Try shortening your resume or use Fit check only mode.',
+  )
+}
+
+async function generateAnalysisStep(
+  settings: Settings,
+  jobDescription: string,
+  resumeText: string,
+  kind: 'fit-only' | 'tailored-analysis',
+  signal?: AbortSignal,
+): Promise<{ analysis: InterviewAnalysis; usage: TokenUsage }> {
+  const maxTokens = kind === 'fit-only' ? 2048 : 2048
+  const { raw, text, finishReason } = await runRequest(
+    settings,
+    kind,
+    jobDescription,
+    resumeText,
+    maxTokens,
+    signal,
+  )
+  return {
+    analysis: parseAnalysisResponse(text, finishReason),
+    usage: extractUsage(raw, settings.model),
+  }
+}
+
 export async function generateTailoredResume(
   settings: Settings,
   jobDescription: string,
   currentResume: string,
   mode: GenerationMode = 'full',
   signal?: AbortSignal,
+  onProgress?: ProgressCallback,
 ): Promise<GenerationResult> {
   if (!settings.apiKey) {
     throw new Error('Add your Gemini API key in Settings first.')
   }
 
-  const isFitOnly = mode === 'fit-only'
-  const maxOutputTokens = isFitOnly
-    ? Math.min(settings.maxOutputTokens, 2048)
-    : Math.max(settings.maxOutputTokens, 8192)
-
-  const body = {
-    systemInstruction: {
-      parts: [{ text: isFitOnly ? FIT_ONLY_SYSTEM_INSTRUCTION : FULL_SYSTEM_INSTRUCTION }],
-    },
-    contents: [{ role: 'user', parts: [{ text: buildPrompt(jobDescription, currentResume, mode) }] }],
-    generationConfig: {
-      temperature: settings.temperature,
-      maxOutputTokens,
-      responseMimeType: 'application/json',
-      responseSchema: isFitOnly ? fitOnlyResponseSchema : fullResponseSchema,
-    },
+  if (mode === 'fit-only') {
+    onProgress?.('Analyzing interview fit…')
+    const { analysis, usage } = await generateAnalysisStep(
+      settings,
+      jobDescription,
+      currentResume,
+      'fit-only',
+      signal,
+    )
+    return { mode: 'fit-only', resume: null, analysis, usage }
   }
 
-  let lastError: Error | null = null
+  // Full mode: two smaller calls — resume first, then score the tailored version.
+  onProgress?.('Step 1 of 2 — Tailoring your resume…')
+  const { resume, usage: resumeUsage } = await generateResumeStep(
+    settings,
+    jobDescription,
+    currentResume,
+    signal,
+  )
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
-    const attemptBody =
-      attempt === 0
-        ? body
-        : {
-            ...body,
-            generationConfig: {
-              ...body.generationConfig,
-              temperature: Math.min(settings.temperature, 0.2),
-            },
-          }
+  onProgress?.('Step 2 of 2 — Scoring interview fit…')
+  const tailoredText = resumeToPlainText(resume)
+  const { analysis, usage: analysisUsage } = await generateAnalysisStep(
+    settings,
+    jobDescription,
+    tailoredText,
+    'tailored-analysis',
+    signal,
+  )
 
-    try {
-      const { raw, text, finishReason } = await callGemini(settings, attemptBody, signal)
-      const parsed = parseModelResponse(text, finishReason, mode)
-      const usage = extractUsage(raw, settings.model)
-      return { ...parsed, usage }
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') throw err
-      lastError = err as Error
-      const message = lastError.message
-      const retryable =
-        /malformed JSON|unexpected response|missing resume or analysis|missing the interview analysis/i.test(
-          message,
-        )
-      if (!retryable || attempt === 1) throw lastError
-    }
+  return {
+    mode: 'full',
+    resume,
+    analysis,
+    usage: mergeUsage(resumeUsage, analysisUsage),
   }
-
-  throw lastError ?? new Error('Gemini request failed. Please try again.')
 }
 
 function humanizeError(status: number, message: string): string {

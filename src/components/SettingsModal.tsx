@@ -115,8 +115,8 @@ export default function SettingsModal({ open, settings, onClose, onSave }: Props
               className="mt-2 w-full accent-brand-600"
             />
             <p className="mt-1 text-xs text-slate-500">
-              Caps how much the model can write per request. Higher = longer resumes allowed, but more
-              tokens billed. ~8k is plenty for most resumes.
+              Max tokens per API call. Full tailoring uses 2 calls (resume + fit score). Most models
+              cap at 8192; Gemini 2.5 supports up to 65536.
             </p>
           </div>
 
