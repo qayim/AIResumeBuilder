@@ -7,6 +7,7 @@ import type {
   TokenUsage,
 } from '../types'
 import { estimateTokenCost } from './pricing'
+import { isRecord, parseJsonText } from './jsonParse'
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
@@ -62,7 +63,6 @@ const fullResponseSchema = {
             location: { type: 'STRING' },
             links: stringArray,
           },
-          required: ['fullName', 'title', 'email', 'phone', 'location', 'links'],
         },
         summary: { type: 'STRING' },
         skills: {
@@ -88,7 +88,6 @@ const fullResponseSchema = {
               endDate: { type: 'STRING' },
               bullets: stringArray,
             },
-            required: ['company', 'role', 'location', 'startDate', 'endDate', 'bullets'],
           },
         },
         education: {
@@ -103,7 +102,6 @@ const fullResponseSchema = {
               endDate: { type: 'STRING' },
               details: stringArray,
             },
-            required: ['institution', 'degree', 'location', 'startDate', 'endDate', 'details'],
           },
         },
         certifications: stringArray,
@@ -115,19 +113,10 @@ const fullResponseSchema = {
               name: { type: 'STRING' },
               description: { type: 'STRING' },
             },
-            required: ['name', 'description'],
           },
         },
       },
-      required: [
-        'contact',
-        'summary',
-        'skills',
-        'experience',
-        'education',
-        'certifications',
-        'projects',
-      ],
+      required: ['contact', 'summary', 'skills', 'experience', 'education'],
     },
     analysis: analysisSchema,
   },
@@ -220,7 +209,7 @@ function extractUsage(raw: unknown, model: string): TokenUsage {
   }
 }
 
-function extractText(raw: unknown): string {
+function extractText(raw: unknown): { text: string; finishReason?: string } {
   const data = raw as {
     candidates?: {
       content?: { parts?: { text?: string }[] }
@@ -234,61 +223,135 @@ function extractText(raw: unknown): string {
   }
 
   const candidate = data.candidates?.[0]
+  const finishReason = candidate?.finishReason
   const parts = candidate?.content?.parts ?? []
   const text = parts.map((p) => p.text ?? '').join('')
 
   if (!text) {
-    if (candidate?.finishReason === 'MAX_TOKENS') {
+    if (finishReason === 'MAX_TOKENS') {
       throw new Error(
         'Gemini hit the max output token limit before finishing. Increase "Max output tokens" in Settings and try again.',
       )
     }
     throw new Error('Gemini returned an empty response. Try again or switch models.')
   }
-  return text
+  return { text, finishReason }
 }
 
-function normalizeAnalysis(analysis: InterviewAnalysis): InterviewAnalysis {
+function emptyResume(): TailoredResume {
   return {
-    ...analysis,
-    interviewChance: Math.max(0, Math.min(100, Math.round(analysis.interviewChance ?? 0))),
-    jobTitle: analysis.jobTitle?.trim() || 'Job',
-    company: analysis.company?.trim() || 'Unknown',
+    contact: { fullName: '', title: '', email: '', phone: '', location: '', links: [] },
+    summary: '',
+    skills: [],
+    experience: [],
+    education: [],
+    certifications: [],
+    projects: [],
   }
 }
 
-export async function generateTailoredResume(
-  settings: Settings,
-  jobDescription: string,
-  currentResume: string,
-  mode: GenerationMode = 'full',
-  signal?: AbortSignal,
-): Promise<GenerationResult> {
-  if (!settings.apiKey) {
-    throw new Error('Add your Gemini API key in Settings first.')
+function coerceAnalysis(value: unknown): InterviewAnalysis {
+  if (!isRecord(value)) {
+    throw new Error('Response is missing the interview analysis object.')
+  }
+  return {
+    interviewChance: Number(value.interviewChance ?? 0),
+    verdict: String(value.verdict ?? ''),
+    jobTitle: String(value.jobTitle ?? ''),
+    company: String(value.company ?? ''),
+    matchedKeywords: Array.isArray(value.matchedKeywords)
+      ? value.matchedKeywords.map(String)
+      : [],
+    missingKeywords: Array.isArray(value.missingKeywords)
+      ? value.missingKeywords.map(String)
+      : [],
+    suggestions: Array.isArray(value.suggestions) ? value.suggestions.map(String) : [],
+    reasoning: String(value.reasoning ?? ''),
+  }
+}
+
+function coerceResume(value: unknown): TailoredResume {
+  if (!isRecord(value)) return emptyResume()
+
+  const contact = isRecord(value.contact) ? value.contact : {}
+  return {
+    contact: {
+      fullName: String(contact.fullName ?? ''),
+      title: String(contact.title ?? ''),
+      email: String(contact.email ?? ''),
+      phone: String(contact.phone ?? ''),
+      location: String(contact.location ?? ''),
+      links: Array.isArray(contact.links) ? contact.links.map(String) : [],
+    },
+    summary: String(value.summary ?? ''),
+    skills: Array.isArray(value.skills) ? (value.skills as TailoredResume['skills']) : [],
+    experience: Array.isArray(value.experience)
+      ? (value.experience as TailoredResume['experience'])
+      : [],
+    education: Array.isArray(value.education)
+      ? (value.education as TailoredResume['education'])
+      : [],
+    certifications: Array.isArray(value.certifications)
+      ? value.certifications.map(String)
+      : [],
+    projects: Array.isArray(value.projects) ? (value.projects as TailoredResume['projects']) : [],
+  }
+}
+
+function parseModelResponse(
+  text: string,
+  finishReason: string | undefined,
+  mode: GenerationMode,
+): Omit<GenerationResult, 'usage'> {
+  let parsed: unknown
+  try {
+    parsed = parseJsonText(text)
+  } catch {
+    if (finishReason === 'MAX_TOKENS') {
+      throw new Error(
+        'Gemini ran out of output tokens and the response was cut off. Increase "Max output tokens" in Settings (try 16384) or use Fit check only mode.',
+      )
+    }
+    throw new Error(
+      'Gemini returned malformed JSON. Try again, switch to Gemini 2.0 Flash in Settings, or use Fit check only mode.',
+    )
   }
 
-  const isFitOnly = mode === 'fit-only'
+  if (!isRecord(parsed)) {
+    throw new Error('Gemini returned an unexpected response shape. Please try again.')
+  }
+
+  if (mode === 'fit-only') {
+    const analysisSource =
+      'analysis' in parsed && isRecord(parsed.analysis) ? parsed.analysis : parsed
+    return {
+      mode: 'fit-only',
+      resume: null,
+      analysis: normalizeAnalysis(coerceAnalysis(analysisSource)),
+    }
+  }
+
+  if (!('resume' in parsed) || !('analysis' in parsed)) {
+    throw new Error(
+      'Gemini response is missing resume or analysis fields. Try again or increase max output tokens.',
+    )
+  }
+
+  return {
+    mode: 'full',
+    resume: coerceResume(parsed.resume),
+    analysis: normalizeAnalysis(coerceAnalysis(parsed.analysis)),
+  }
+}
+
+async function callGemini(
+  settings: Settings,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ raw: unknown; text: string; finishReason?: string }> {
   const url = `${API_BASE}/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(
     settings.apiKey,
   )}`
-
-  const maxOutputTokens = isFitOnly
-    ? Math.min(settings.maxOutputTokens, 2048)
-    : settings.maxOutputTokens
-
-  const body = {
-    systemInstruction: {
-      parts: [{ text: isFitOnly ? FIT_ONLY_SYSTEM_INSTRUCTION : FULL_SYSTEM_INSTRUCTION }],
-    },
-    contents: [{ role: 'user', parts: [{ text: buildPrompt(jobDescription, currentResume, mode) }] }],
-    generationConfig: {
-      temperature: settings.temperature,
-      maxOutputTokens,
-      responseMimeType: 'application/json',
-      responseSchema: isFitOnly ? fitOnlyResponseSchema : fullResponseSchema,
-    },
-  }
 
   let response: Response
   try {
@@ -314,31 +377,82 @@ export async function generateTailoredResume(
     throw error
   }
 
-  const text = extractText(raw)
-  const usage = extractUsage(raw, settings.model)
+  const { text, finishReason } = extractText(raw)
+  return { raw, text, finishReason }
+}
 
-  try {
-    const parsed = JSON.parse(text)
-
-    if (isFitOnly) {
-      return {
-        mode: 'fit-only',
-        resume: null,
-        analysis: normalizeAnalysis(parsed.analysis as InterviewAnalysis),
-        usage,
-      }
-    }
-
-    const full = parsed as { resume: TailoredResume; analysis: InterviewAnalysis }
-    return {
-      mode: 'full',
-      resume: full.resume,
-      analysis: normalizeAnalysis(full.analysis),
-      usage,
-    }
-  } catch {
-    throw new Error('Gemini returned malformed JSON. Try again or lower the temperature in Settings.')
+function normalizeAnalysis(analysis: InterviewAnalysis): InterviewAnalysis {
+  return {
+    ...analysis,
+    interviewChance: Math.max(0, Math.min(100, Math.round(analysis.interviewChance ?? 0))),
+    jobTitle: analysis.jobTitle?.trim() || 'Job',
+    company: analysis.company?.trim() || 'Unknown',
   }
+}
+
+export async function generateTailoredResume(
+  settings: Settings,
+  jobDescription: string,
+  currentResume: string,
+  mode: GenerationMode = 'full',
+  signal?: AbortSignal,
+): Promise<GenerationResult> {
+  if (!settings.apiKey) {
+    throw new Error('Add your Gemini API key in Settings first.')
+  }
+
+  const isFitOnly = mode === 'fit-only'
+  const maxOutputTokens = isFitOnly
+    ? Math.min(settings.maxOutputTokens, 2048)
+    : Math.max(settings.maxOutputTokens, 8192)
+
+  const body = {
+    systemInstruction: {
+      parts: [{ text: isFitOnly ? FIT_ONLY_SYSTEM_INSTRUCTION : FULL_SYSTEM_INSTRUCTION }],
+    },
+    contents: [{ role: 'user', parts: [{ text: buildPrompt(jobDescription, currentResume, mode) }] }],
+    generationConfig: {
+      temperature: settings.temperature,
+      maxOutputTokens,
+      responseMimeType: 'application/json',
+      responseSchema: isFitOnly ? fitOnlyResponseSchema : fullResponseSchema,
+    },
+  }
+
+  let lastError: Error | null = null
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
+    const attemptBody =
+      attempt === 0
+        ? body
+        : {
+            ...body,
+            generationConfig: {
+              ...body.generationConfig,
+              temperature: Math.min(settings.temperature, 0.2),
+            },
+          }
+
+    try {
+      const { raw, text, finishReason } = await callGemini(settings, attemptBody, signal)
+      const parsed = parseModelResponse(text, finishReason, mode)
+      const usage = extractUsage(raw, settings.model)
+      return { ...parsed, usage }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err
+      lastError = err as Error
+      const message = lastError.message
+      const retryable =
+        /malformed JSON|unexpected response|missing resume or analysis|missing the interview analysis/i.test(
+          message,
+        )
+      if (!retryable || attempt === 1) throw lastError
+    }
+  }
+
+  throw lastError ?? new Error('Gemini request failed. Please try again.')
 }
 
 function humanizeError(status: number, message: string): string {

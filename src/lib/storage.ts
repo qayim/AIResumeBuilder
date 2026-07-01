@@ -5,7 +5,7 @@ const STORAGE_KEY = 'resume-tailor-settings'
 export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   model: 'gemini-2.0-flash',
-  maxOutputTokens: 8192,
+  maxOutputTokens: 16384,
   temperature: 0.4,
 }
 
