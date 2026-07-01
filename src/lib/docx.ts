@@ -207,16 +207,13 @@ export function buildResumeDocument(resume: TailoredResume): Document {
   })
 }
 
-function safeFileName(jobTitle: string, company: string, userName: string): string {
-  return buildResumeFileName(jobTitle, company, userName)
-}
-
 export async function downloadResumeDocx(
   resume: TailoredResume,
   jobTitle: string,
   company: string,
+  label = 'Resume',
 ): Promise<void> {
   const doc = buildResumeDocument(resume)
   const blob = await Packer.toBlob(doc)
-  saveAs(blob, safeFileName(jobTitle, company, resume.contact?.fullName ?? 'User'))
+  saveAs(blob, buildResumeFileName(jobTitle, company, resume.contact?.fullName ?? 'User', label))
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GenerationMode, GenerationResult, Settings } from './types'
+import type { GenerationMode, GenerationResult, ResumeLength, Settings } from './types'
 import { loadSettings, saveSettings } from './lib/storage'
 import { AVAILABLE_MODELS, generateTailoredResume } from './lib/gemini'
 import { downloadResumeDocx } from './lib/docx'
@@ -14,9 +14,10 @@ export default function App() {
   const [jobDescription, setJobDescription] = useState('')
   const [currentResume, setCurrentResume] = useState('')
   const [fitOnly, setFitOnly] = useState(false)
+  const [resumeLength, setResumeLength] = useState<ResumeLength>('one-page')
   const [loading, setLoading] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
-  const [downloading, setDownloading] = useState(false)
+  const [downloading, setDownloading] = useState<'tailored' | 'ideal' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<GenerationResult | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -36,7 +37,7 @@ export default function App() {
     setError(null)
     setResult(null)
     setLoading(true)
-    setLoadingMessage(fitOnly ? 'Analyzing interview fit…' : 'Step 1 of 2 — Tailoring your resume…')
+    setLoadingMessage(fitOnly ? 'Analyzing interview fit…' : 'Step 1 of 3 — Tailoring your resume…')
     const controller = new AbortController()
     abortRef.current = controller
     const mode: GenerationMode = fitOnly ? 'fit-only' : 'full'
@@ -46,6 +47,7 @@ export default function App() {
         jobDescription,
         currentResume,
         mode,
+        resumeLength,
         controller.signal,
         setLoadingMessage,
       )
@@ -63,19 +65,22 @@ export default function App() {
 
   const handleCancel = () => abortRef.current?.abort()
 
-  const handleDownload = async () => {
-    if (!result?.resume) return
-    setDownloading(true)
+  const handleDownload = async (which: 'tailored' | 'ideal') => {
+    if (!result) return
+    const resume = which === 'ideal' ? result.idealResume : result.resume
+    if (!resume) return
+    setDownloading(which)
     try {
       await downloadResumeDocx(
-        result.resume,
+        resume,
         result.analysis.jobTitle,
         result.analysis.company,
+        which === 'ideal' ? 'Ideal_Resume' : 'Resume',
       )
     } catch {
       setError('Failed to generate the .docx file. Please try again.')
     } finally {
-      setDownloading(false)
+      setDownloading(null)
     }
   }
 
@@ -113,9 +118,9 @@ export default function App() {
             Tailor your resume to any job in seconds
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
-            Paste a job description and your current resume. Gemini rewrites it to match the role,
-            estimates your interview chances, and exports a polished <code>.docx</code>. Or toggle
-            fit-check only to save tokens.
+            Paste a job description and your current resume. Get a tailored resume (1 page or 2–3 pages),
+            an ideal benchmark version for the role, interview-chance scoring, and <code>.docx</code>{' '}
+            downloads.
           </p>
         </div>
 
@@ -141,11 +146,13 @@ export default function App() {
             jobDescription={jobDescription}
             currentResume={currentResume}
             fitOnly={fitOnly}
+            resumeLength={resumeLength}
             loading={loading}
             hasApiKey={Boolean(settings.apiKey)}
             onJobDescriptionChange={setJobDescription}
             onCurrentResumeChange={setCurrentResume}
             onFitOnlyChange={setFitOnly}
+            onResumeLengthChange={setResumeLength}
             onGenerate={handleGenerate}
             onCancel={handleCancel}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -157,16 +164,20 @@ export default function App() {
               <p className="text-sm font-medium text-slate-700">
                 {loadingMessage || (fitOnly
                   ? 'Gemini is analyzing your fit for this role…'
-                  : 'Gemini is tailoring your resume and scoring your match…')}
+                  : 'Gemini is building your resumes and scoring your match…')}
               </p>
               <p className="text-xs text-slate-400">
-                {fitOnly ? 'This usually takes 5–15 seconds.' : 'Two quick steps — usually 15–30 seconds.'}
+                {fitOnly ? 'This usually takes 5–15 seconds.' : 'Three steps — usually 20–45 seconds.'}
               </p>
             </div>
           ) : null}
 
           {result ? (
-            <ResultsView result={result} downloading={downloading} onDownload={handleDownload} />
+            <ResultsView
+              result={result}
+              downloading={downloading}
+              onDownload={handleDownload}
+            />
           ) : null}
         </div>
 

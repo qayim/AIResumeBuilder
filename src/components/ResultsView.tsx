@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import type { GenerationResult, TailoredResume } from '../types'
-import { formatCostUsd } from '../lib/pricing'
+import { formatCostMyr } from '../lib/pricing'
 import ChanceGauge from './ChanceGauge'
 import { CheckIcon, CopyIcon, DownloadIcon } from './icons'
 
 interface Props {
   result: GenerationResult
-  downloading: boolean
-  onDownload: () => void
+  downloading: 'tailored' | 'ideal' | null
+  onDownload: (which: 'tailored' | 'ideal') => void
 }
+
+type ResumeTab = 'tailored' | 'ideal'
 
 function resumeToPlainText(r: TailoredResume): string {
   const lines: string[] = []
@@ -167,16 +169,72 @@ function KeywordChips({ items, tone }: { items: string[]; tone: 'good' | 'bad' }
   )
 }
 
+function ResumePanel({
+  resume,
+  tab,
+  resumeLength,
+  copied,
+  downloading,
+  onCopy,
+  onDownload,
+}: {
+  resume: TailoredResume
+  tab: ResumeTab
+  resumeLength: GenerationResult['resumeLength']
+  copied: boolean
+  downloading: boolean
+  onCopy: () => void
+  onDownload: () => void
+}) {
+  const isIdeal = tab === 'ideal'
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          {isIdeal ? (
+            <>
+              <h3 className="text-sm font-semibold text-slate-900">Ideal resume for this role</h3>
+              <p className="text-xs text-slate-500">
+                Best possible presentation for the job — using only your real qualifications.
+              </p>
+            </>
+          ) : (
+            <>
+              <h3 className="text-sm font-semibold text-slate-900">Your tailored resume</h3>
+              <span className="mt-0.5 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                {resumeLength === 'one-page' ? '1 page' : '2–3 pages'}
+              </span>
+            </>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button className="btn-secondary !py-2 !text-xs" onClick={onCopy}>
+            {copied ? <CheckIcon width={14} height={14} /> : <CopyIcon width={14} height={14} />}
+            {copied ? 'Copied' : 'Copy text'}
+          </button>
+          <button className="btn-primary !py-2 !text-xs" onClick={onDownload} disabled={downloading}>
+            <DownloadIcon width={14} height={14} />
+            {downloading ? 'Preparing…' : 'Download .docx'}
+          </button>
+        </div>
+      </div>
+      <ResumePreview resume={resume} />
+    </div>
+  )
+}
+
 export default function ResultsView({ result, downloading, onDownload }: Props) {
-  const { resume, analysis, usage, mode } = result
-  const [copied, setCopied] = useState(false)
+  const { resume, idealResume, analysis, usage, mode, resumeLength } = result
+  const [activeTab, setActiveTab] = useState<ResumeTab>('tailored')
+  const [copiedTab, setCopiedTab] = useState<ResumeTab | null>(null)
   const isFitOnly = mode === 'fit-only'
 
-  const copyText = async () => {
-    if (!resume) return
-    await navigator.clipboard.writeText(resumeToPlainText(resume))
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1800)
+  const copyText = async (tab: ResumeTab) => {
+    const r = tab === 'ideal' ? idealResume : resume
+    if (!r) return
+    await navigator.clipboard.writeText(resumeToPlainText(r))
+    setCopiedTab(tab)
+    setTimeout(() => setCopiedTab(null), 1800)
   }
 
   const analysisPanel = (
@@ -236,12 +294,12 @@ export default function ResultsView({ result, downloading, onDownload }: Props) 
             <p className="text-[11px] text-slate-500">Total</p>
           </div>
           <div className="rounded-lg bg-emerald-50 py-2">
-            <p className="text-base font-bold text-emerald-700">{formatCostUsd(usage.estimatedCostUsd)}</p>
-            <p className="text-[11px] text-slate-500">Est. cost</p>
+            <p className="text-base font-bold text-emerald-700">{formatCostMyr(usage.estimatedCostMyr)}</p>
+            <p className="text-[11px] text-slate-500">Est. cost (MYR)</p>
           </div>
         </div>
         <p className="mt-2 text-[10px] text-slate-400">
-          Cost is estimated from published Gemini pricing. Full mode uses 2 API calls; totals are combined.
+          Cost is estimated from Gemini USD pricing at ~RM 4.75/USD. Full mode uses 3 API calls.
         </p>
       </div>
     </div>
@@ -251,27 +309,49 @@ export default function ResultsView({ result, downloading, onDownload }: Props) 
     return <div className="max-w-xl animate-fade-in">{analysisPanel}</div>
   }
 
+  const activeResume = activeTab === 'ideal' ? idealResume : resume
+
   return (
     <div className="grid animate-fade-in gap-5 lg:grid-cols-[360px_1fr]">
       {analysisPanel}
 
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-900">Tailored resume preview</h3>
-          {resume ? (
-            <div className="flex gap-2">
-              <button className="btn-secondary !py-2 !text-xs" onClick={copyText}>
-                {copied ? <CheckIcon width={14} height={14} /> : <CopyIcon width={14} height={14} />}
-                {copied ? 'Copied' : 'Copy text'}
-              </button>
-              <button className="btn-primary !py-2 !text-xs" onClick={onDownload} disabled={downloading}>
-                <DownloadIcon width={14} height={14} />
-                {downloading ? 'Preparing…' : 'Download .docx'}
-              </button>
-            </div>
-          ) : null}
+        <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-100 p-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab('tailored')}
+            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
+              activeTab === 'tailored'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Tailored resume
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('ideal')}
+            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
+              activeTab === 'ideal'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Ideal resume
+          </button>
         </div>
-        {resume ? <ResumePreview resume={resume} /> : null}
+
+        {activeResume ? (
+          <ResumePanel
+            resume={activeResume}
+            tab={activeTab}
+            resumeLength={resumeLength}
+            copied={copiedTab === activeTab}
+            downloading={downloading === activeTab}
+            onCopy={() => copyText(activeTab)}
+            onDownload={() => onDownload(activeTab)}
+          />
+        ) : null}
       </div>
     </div>
   )

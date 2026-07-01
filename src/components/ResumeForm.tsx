@@ -1,14 +1,17 @@
+import type { ResumeLength } from '../types'
 import { SparklesIcon } from './icons'
 
 interface Props {
   jobDescription: string
   currentResume: string
   fitOnly: boolean
+  resumeLength: ResumeLength
   loading: boolean
   hasApiKey: boolean
   onJobDescriptionChange: (v: string) => void
   onCurrentResumeChange: (v: string) => void
   onFitOnlyChange: (v: boolean) => void
+  onResumeLengthChange: (v: ResumeLength) => void
   onGenerate: () => void
   onCancel: () => void
   onOpenSettings: () => void
@@ -23,11 +26,13 @@ export default function ResumeForm({
   jobDescription,
   currentResume,
   fitOnly,
+  resumeLength,
   loading,
   hasApiKey,
   onJobDescriptionChange,
   onCurrentResumeChange,
   onFitOnlyChange,
+  onResumeLengthChange,
   onGenerate,
   onCancel,
   onOpenSettings,
@@ -98,11 +103,49 @@ export default function ResumeForm({
         </button>
       </div>
 
+      {!fitOnly ? (
+        <div className="mt-4">
+          <p className="field-label">Tailored resume length</p>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => onResumeLengthChange('one-page')}
+              className={`rounded-xl border px-4 py-3 text-left transition ${
+                resumeLength === 'one-page'
+                  ? 'border-brand-500 bg-brand-50 ring-2 ring-brand-200'
+                  : 'border-slate-200 bg-white hover:border-slate-300'
+              }`}
+            >
+              <p className="text-sm font-semibold text-slate-900">1 page</p>
+              <p className="text-xs text-slate-500">Concise, ATS-friendly (default)</p>
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => onResumeLengthChange('multi-page')}
+              className={`rounded-xl border px-4 py-3 text-left transition ${
+                resumeLength === 'multi-page'
+                  ? 'border-brand-500 bg-brand-50 ring-2 ring-brand-200'
+                  : 'border-slate-200 bg-white hover:border-slate-300'
+              }`}
+            >
+              <p className="text-sm font-semibold text-slate-900">2–3 pages</p>
+              <p className="text-xs text-slate-500">Detailed, all experience included</p>
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            You also get an <strong>ideal resume</strong> — the best possible version for this job using
+            only your real qualifications.
+          </p>
+        </div>
+      ) : null}
+
       <div className="mt-5 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-slate-500">
           {fitOnly
             ? 'Fit-only mode analyzes your current resume as-is — no .docx download.'
-            : 'Tip: paste as much detail as possible. Nothing is invented — the AI only re-emphasizes what\'s truly in your resume.'}
+            : 'Nothing is invented — the AI only re-emphasizes what\'s truly in your resume.'}
         </p>
         <div className="flex items-center gap-2">
           {loading ? (

@@ -2,6 +2,7 @@ import type {
   GenerationMode,
   GenerationResult,
   InterviewAnalysis,
+  ResumeLength,
   Settings,
   TailoredResume,
   TokenUsage,
@@ -134,21 +135,64 @@ const resumeOnlyResponseSchema = {
   required: ['resume'],
 }
 
-const RESUME_ONLY_INSTRUCTION = `You are an expert resume writer specializing in ATS-optimized resumes.
-
-Rewrite the candidate's resume so it is tailored to the job description. Return ONLY the tailored resume as JSON — no interview analysis.
-
-Strict rules:
-- NEVER invent experience, employers, dates, degrees, or skills the candidate does not have.
+const RESUME_BASE_RULES = `- NEVER invent experience, employers, dates, degrees, or skills the candidate does not have.
 - Mirror job-description keywords where the candidate genuinely qualifies.
 - Use strong action verbs; quantify impact when numbers exist in the original.
-- Keep the summary to 2-3 sentences (under 70 words).
-- Max 4 bullet points per experience entry; keep each bullet under 25 words.
-- Max 3 skill categories; list only the most relevant skills.
 - Include projects and certifications only if present in the original resume.
-- If a field is unknown, use an empty string or empty array.
+- If a field is unknown, use an empty string or empty array.`
+
+const ONE_PAGE_RULES = `${RESUME_BASE_RULES}
+- Target ONE page when printed (~400-500 words of content).
+- Summary: 2-3 sentences (under 70 words).
+- Max 4 bullet points per experience entry; each bullet under 25 words.
+- Max 3 skill categories; prioritize JD-relevant skills.
+- Include only the most relevant 3-4 experience entries if the resume is long.`
+
+const MULTI_PAGE_RULES = `${RESUME_BASE_RULES}
+- Target TWO to THREE pages when printed — comprehensive but focused.
+- Summary: 4-6 sentences covering career arc and fit for this role.
+- Max 7 bullet points per experience entry; expand with metrics and context.
+- Up to 6 skill categories; include all genuinely relevant skills from the original.
+- Include ALL experience, education, projects, and certifications from the original resume.
+- Add detail to each role — do not omit jobs unless clearly irrelevant to the JD.`
+
+const IDEAL_RESUME_RULES = `${RESUME_BASE_RULES}
+- Create the IDEAL resume for THIS job — how this candidate should present their REAL background to maximize fit.
+- Use every qualification from the original resume that maps to the job description; omit nothing relevant.
+- Structure sections in the order and language the JD implies (mirror must-have keywords throughout).
+- Summary: compelling 4-5 sentence pitch directly addressing the role's top requirements.
+- Max 7 bullets per role; each bullet should tie achievements to JD requirements where honest.
+- This is a benchmark "gold standard" version — still 100% truthful, but maximally optimized for the role.
+- Target 1-2 pages of dense, high-impact content.`
+
+type ResumeVariant = 'tailored-one-page' | 'tailored-multi-page' | 'ideal'
+
+type RequestKind = 'fit-only' | 'resume-only' | 'tailored-analysis'
+
+function resumeInstruction(variant: ResumeVariant, concise: boolean): string {
+  const rules =
+    variant === 'ideal'
+      ? IDEAL_RESUME_RULES
+      : variant === 'tailored-multi-page'
+        ? MULTI_PAGE_RULES
+        : ONE_PAGE_RULES
+
+  const intro =
+    variant === 'ideal'
+      ? `You are an expert resume writer. Produce the IDEAL resume for the job description using ONLY the candidate's real qualifications. Return ONLY the resume as JSON.`
+      : `You are an expert resume writer specializing in ATS-optimized resumes. Rewrite the candidate's resume tailored to the job description. Return ONLY the tailored resume as JSON.`
+
+  const conciseNote = concise
+    ? '\n\nIMPORTANT: Prior pass was too long. Be extra concise — fewer bullets and a shorter summary.'
+    : ''
+
+  return `${intro}
+
+${rules}
+${conciseNote}
 
 Respond ONLY with JSON conforming to the schema.`
+}
 
 const ANALYSIS_COMPACT_RULES = `
 Keep analysis output SHORT to fit token limits:
@@ -192,8 +236,6 @@ export interface GeminiError extends Error {
   status?: number
 }
 
-type RequestKind = 'fit-only' | 'resume-only' | 'tailored-analysis'
-
 function outputLimit(model: string, requested: number): number {
   const cap = MODEL_MAX_OUTPUT[model] ?? 8192
   return Math.min(Math.max(requested, 1024), cap)
@@ -221,6 +263,7 @@ function buildPrompt(
   jobDescription: string,
   resumeText: string,
   kind: RequestKind,
+  resumeVariant?: ResumeVariant,
 ): string {
   const base = buildInputs(jobDescription, resumeText)
 
@@ -231,9 +274,19 @@ Analyze fit between this resume and job description. Return interview analysis J
   }
 
   if (kind === 'resume-only') {
+    if (resumeVariant === 'ideal') {
+      return `${base}
+
+Produce the IDEAL resume for this job using only the candidate's real qualifications. Return resume JSON only.`
+    }
+    if (resumeVariant === 'tailored-multi-page') {
+      return `${base}
+
+Produce a detailed 2-3 page tailored resume as JSON only.`
+    }
     return `${base}
 
-Produce the tailored resume as JSON only. Keep output compact to stay within token limits.`
+Produce a concise 1-page tailored resume as JSON only.`
   }
 
   return `${base}
@@ -250,7 +303,7 @@ function extractUsage(raw: unknown, model: string): TokenUsage {
     promptTokens,
     outputTokens,
     totalTokens,
-    estimatedCostUsd: estimateTokenCost(model, promptTokens, outputTokens),
+    estimatedCostMyr: estimateTokenCost(model, promptTokens, outputTokens),
   }
 }
 
@@ -259,7 +312,7 @@ function mergeUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
     promptTokens: a.promptTokens + b.promptTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
-    estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
+    estimatedCostMyr: a.estimatedCostMyr + b.estimatedCostMyr,
   }
 }
 
@@ -332,8 +385,13 @@ function trimBullets(items: { bullets?: string[] }[], max: number) {
   }
 }
 
-function coerceResume(value: unknown): TailoredResume {
+function coerceResume(value: unknown, variant: ResumeVariant = 'tailored-one-page'): TailoredResume {
   if (!isRecord(value)) return emptyResume()
+
+  const isCompact = variant === 'tailored-one-page'
+  const maxBullets = isCompact ? 4 : 7
+  const maxSkills = isCompact ? 4 : 8
+  const maxProjects = isCompact ? 5 : 10
 
   const contact = isRecord(value.contact) ? value.contact : {}
   const resume: TailoredResume = {
@@ -346,7 +404,9 @@ function coerceResume(value: unknown): TailoredResume {
       links: Array.isArray(contact.links) ? contact.links.map(String) : [],
     },
     summary: String(value.summary ?? ''),
-    skills: Array.isArray(value.skills) ? (value.skills as TailoredResume['skills']).slice(0, 4) : [],
+    skills: Array.isArray(value.skills)
+      ? (value.skills as TailoredResume['skills']).slice(0, maxSkills)
+      : [],
     experience: Array.isArray(value.experience)
       ? (value.experience as TailoredResume['experience'])
       : [],
@@ -357,11 +417,11 @@ function coerceResume(value: unknown): TailoredResume {
       ? value.certifications.map(String).slice(0, 10)
       : [],
     projects: Array.isArray(value.projects)
-      ? (value.projects as TailoredResume['projects']).slice(0, 5)
+      ? (value.projects as TailoredResume['projects']).slice(0, maxProjects)
       : [],
   }
 
-  trimBullets(resume.experience, 4)
+  trimBullets(resume.experience, maxBullets)
   return resume
 }
 
@@ -385,7 +445,11 @@ function parseAnalysisResponse(text: string, finishReason?: string): InterviewAn
   return normalizeAnalysis(coerceAnalysis(source))
 }
 
-function parseResumeResponse(text: string, finishReason?: string): TailoredResume {
+function parseResumeResponse(
+  text: string,
+  finishReason: string | undefined,
+  variant: ResumeVariant = 'tailored-one-page',
+): TailoredResume {
   let parsed: unknown
   try {
     parsed = parseJsonText(text)
@@ -403,7 +467,7 @@ function parseResumeResponse(text: string, finishReason?: string): TailoredResum
   }
 
   const source = 'resume' in parsed ? parsed.resume : parsed
-  return coerceResume(source)
+  return coerceResume(source, variant)
 }
 
 function resumeToAnalysisSummary(resume: TailoredResume): string {
@@ -472,14 +536,13 @@ function requestBody(
   prompt: string,
   maxOutputTokens: number,
   concise = false,
+  resumeVariant: ResumeVariant = 'tailored-one-page',
 ): Record<string, unknown> {
   const instructions: Record<RequestKind, string> = {
     'fit-only': concise
       ? `${FIT_ONLY_INSTRUCTION}\n\nBe extremely brief — half the normal length.`
       : FIT_ONLY_INSTRUCTION,
-    'resume-only': concise
-      ? `${RESUME_ONLY_INSTRUCTION}\n\nIMPORTANT: Prior pass was too long. Be extra concise — max 3 bullets per job, shorter summary.`
-      : RESUME_ONLY_INSTRUCTION,
+    'resume-only': resumeInstruction(resumeVariant, concise),
     'tailored-analysis': concise
       ? `${TAILORED_ANALYSIS_INSTRUCTION}\n\nBe extremely brief — half the normal length.`
       : TAILORED_ANALYSIS_INSTRUCTION,
@@ -511,13 +574,15 @@ async function runRequest(
   maxOutputTokens: number,
   signal?: AbortSignal,
   concise = false,
+  resumeVariant: ResumeVariant = 'tailored-one-page',
 ): Promise<{ raw: unknown; text: string; finishReason?: string }> {
   const body = requestBody(
     settings,
     kind,
-    buildPrompt(jobDescription, resumeText, kind),
+    buildPrompt(jobDescription, resumeText, kind, resumeVariant),
     maxOutputTokens,
     concise,
+    resumeVariant,
   )
   return callGemini(settings, body, signal)
 }
@@ -531,10 +596,15 @@ function normalizeAnalysis(analysis: InterviewAnalysis): InterviewAnalysis {
   }
 }
 
+function toResumeVariant(length: ResumeLength): ResumeVariant {
+  return length === 'multi-page' ? 'tailored-multi-page' : 'tailored-one-page'
+}
+
 async function generateResumeStep(
   settings: Settings,
   jobDescription: string,
   currentResume: string,
+  variant: ResumeVariant,
   signal?: AbortSignal,
 ): Promise<{ resume: TailoredResume; usage: TokenUsage }> {
   const maxTokens = outputLimit(settings.model, settings.maxOutputTokens)
@@ -548,10 +618,11 @@ async function generateResumeStep(
       maxTokens,
       signal,
       attempt === 1,
+      variant,
     )
 
     try {
-      const resume = parseResumeResponse(text, finishReason)
+      const resume = parseResumeResponse(text, finishReason, variant)
       if (finishReason === 'MAX_TOKENS' && attempt === 0) continue
       return { resume, usage: extractUsage(raw, settings.model) }
     } catch (err) {
@@ -559,9 +630,12 @@ async function generateResumeStep(
     }
   }
 
-  throw new Error(
-    'Could not generate a complete resume within token limits. Try shortening your resume or use Fit check only mode.',
-  )
+  const hint =
+    variant === 'tailored-one-page'
+      ? 'Try 2-3 pages length, shorten your input, or use Fit check only mode.'
+      : 'Try 1 page length, shorten your input, or use Fit check only mode.'
+
+  throw new Error(`Could not generate a complete resume within token limits. ${hint}`)
 }
 
 async function generateAnalysisStep(
@@ -576,7 +650,7 @@ async function generateAnalysisStep(
     promptTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
-    estimatedCostUsd: 0,
+    estimatedCostMyr: 0,
   }
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -610,6 +684,7 @@ export async function generateTailoredResume(
   jobDescription: string,
   currentResume: string,
   mode: GenerationMode = 'full',
+  resumeLength: ResumeLength = 'one-page',
   signal?: AbortSignal,
   onProgress?: ProgressCallback,
 ): Promise<GenerationResult> {
@@ -626,21 +701,41 @@ export async function generateTailoredResume(
       'fit-only',
       signal,
     )
-    return { mode: 'fit-only', resume: null, analysis, usage }
+    return {
+      mode: 'fit-only',
+      resumeLength,
+      resume: null,
+      idealResume: null,
+      analysis,
+      usage,
+    }
   }
 
-  // Full mode: two smaller calls — resume first, then score the tailored version.
-  onProgress?.('Step 1 of 2 — Tailoring your resume…')
+  const tailoredVariant = toResumeVariant(resumeLength)
+
+  onProgress?.('Step 1 of 3 — Tailoring your resume…')
   const { resume, usage: resumeUsage } = await generateResumeStep(
     settings,
     jobDescription,
     currentResume,
+    tailoredVariant,
     signal,
   )
 
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
-  onProgress?.('Step 2 of 2 — Scoring interview fit…')
+  onProgress?.('Step 2 of 3 — Building ideal resume for this role…')
+  const { resume: idealResume, usage: idealUsage } = await generateResumeStep(
+    settings,
+    jobDescription,
+    currentResume,
+    'ideal',
+    signal,
+  )
+
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
+  onProgress?.('Step 3 of 3 — Scoring interview fit…')
   const summaryText = resumeToAnalysisSummary(resume)
   const { analysis, usage: analysisUsage } = await generateAnalysisStep(
     settings,
@@ -652,9 +747,11 @@ export async function generateTailoredResume(
 
   return {
     mode: 'full',
+    resumeLength,
     resume,
+    idealResume,
     analysis,
-    usage: mergeUsage(resumeUsage, analysisUsage),
+    usage: mergeUsage(mergeUsage(resumeUsage, idealUsage), analysisUsage),
   }
 }
 

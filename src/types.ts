@@ -70,15 +70,22 @@ export interface TokenUsage {
   promptTokens: number
   outputTokens: number
   totalTokens: number
-  /** Estimated API cost in USD for this request. */
-  estimatedCostUsd: number
+  /** Estimated API cost in MYR for this request. */
+  estimatedCostMyr: number
 }
 
 export type GenerationMode = 'full' | 'fit-only'
 
+/** Target length for the tailored resume output. */
+export type ResumeLength = 'one-page' | 'multi-page'
+
 export interface GenerationResult {
   mode: GenerationMode
+  resumeLength: ResumeLength
+  /** Candidate's resume tailored to the job at the chosen length. */
   resume: TailoredResume | null
+  /** Best possible resume for the role using only the candidate's real qualifications. */
+  idealResume: TailoredResume | null
   analysis: InterviewAnalysis
   usage: TokenUsage
 }
