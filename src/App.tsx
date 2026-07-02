@@ -17,7 +17,7 @@ export default function App() {
   const [resumeLength, setResumeLength] = useState<ResumeLength>('one-page')
   const [loading, setLoading] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
-  const [downloading, setDownloading] = useState<'tailored' | 'ideal' | null>(null)
+  const [downloading, setDownloading] = useState<'tailored' | 'ideal' | 'perfect' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<GenerationResult | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -37,7 +37,7 @@ export default function App() {
     setError(null)
     setResult(null)
     setLoading(true)
-    setLoadingMessage(fitOnly ? 'Analyzing interview fit…' : 'Step 1 of 3 — Tailoring your resume…')
+    setLoadingMessage(fitOnly ? 'Analyzing interview fit…' : 'Step 1 of 4 — Tailoring your resume…')
     const controller = new AbortController()
     abortRef.current = controller
     const mode: GenerationMode = fitOnly ? 'fit-only' : 'full'
@@ -65,18 +65,20 @@ export default function App() {
 
   const handleCancel = () => abortRef.current?.abort()
 
-  const handleDownload = async (which: 'tailored' | 'ideal') => {
+  const handleDownload = async (which: 'tailored' | 'ideal' | 'perfect') => {
     if (!result) return
-    const resume = which === 'ideal' ? result.idealResume : result.resume
+    const resume =
+      which === 'perfect'
+        ? result.perfectResume
+        : which === 'ideal'
+          ? result.idealResume
+          : result.resume
     if (!resume) return
     setDownloading(which)
     try {
-      await downloadResumeDocx(
-        resume,
-        result.analysis.jobTitle,
-        result.analysis.company,
-        which === 'ideal' ? 'Ideal_Resume' : 'Resume',
-      )
+      const label =
+        which === 'perfect' ? 'Perfect_Resume' : which === 'ideal' ? 'Ideal_Resume' : 'Resume'
+      await downloadResumeDocx(resume, result.analysis.jobTitle, result.analysis.company, label)
     } catch {
       setError('Failed to generate the .docx file. Please try again.')
     } finally {
@@ -119,8 +121,8 @@ export default function App() {
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
             Paste a job description and your current resume. Get a tailored resume (1 page or 2–3 pages),
-            an ideal benchmark version for the role, interview-chance scoring, and <code>.docx</code>{' '}
-            downloads.
+            an ideal benchmark version, a perfect-candidate version that fills JD gaps, interview-chance
+            scoring, and <code>.docx</code> downloads.
           </p>
         </div>
 
@@ -167,7 +169,7 @@ export default function App() {
                   : 'Gemini is building your resumes and scoring your match…')}
               </p>
               <p className="text-xs text-slate-400">
-                {fitOnly ? 'This usually takes 5–15 seconds.' : 'Three steps — usually 20–45 seconds.'}
+                {fitOnly ? 'This usually takes 5–15 seconds.' : 'Four steps — usually 25–50 seconds.'}
               </p>
             </div>
           ) : null}

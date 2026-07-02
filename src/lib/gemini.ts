@@ -165,22 +165,39 @@ const IDEAL_RESUME_RULES = `${RESUME_BASE_RULES}
 - This is a benchmark "gold standard" version — still 100% truthful, but maximally optimized for the role.
 - Target 1-2 pages of dense, high-impact content.`
 
-type ResumeVariant = 'tailored-one-page' | 'tailored-multi-page' | 'ideal'
+const PERFECT_RESUME_RULES = `- Start from the candidate's existing resume and the job description.
+- Build the resume of the PERFECT CANDIDATE for this role — someone who meets every major JD requirement.
+- KEEP all real contact info, employers, dates, and education from the original resume.
+- ADD every skill, tool, technology, certification, and keyword from the JD that is missing from the resume.
+- ADD new experience bullets to existing roles (or new project entries) that cover JD gaps — write them as if the candidate possesses those qualifications.
+- EXPAND the skills section until it covers 100% of JD must-haves and nice-to-haves.
+- REFRAME the summary to position the candidate as an exact match for the role.
+- Mirror the job description's language and keyword priorities throughout.
+- Max 8 bullet points per role where needed to cover JD requirements.
+- Include certifications and projects that satisfy JD requirements, adding any missing ones plausibly.
+- This is an aspirational "perfect match" profile — complete the resume so it fully satisfies the job posting.
+- Target 1-2 pages of comprehensive, keyword-rich content.`
+
+type ResumeVariant = 'tailored-one-page' | 'tailored-multi-page' | 'ideal' | 'perfect'
 
 type RequestKind = 'fit-only' | 'resume-only' | 'tailored-analysis'
 
 function resumeInstruction(variant: ResumeVariant, concise: boolean): string {
   const rules =
-    variant === 'ideal'
-      ? IDEAL_RESUME_RULES
-      : variant === 'tailored-multi-page'
-        ? MULTI_PAGE_RULES
-        : ONE_PAGE_RULES
+    variant === 'perfect'
+      ? PERFECT_RESUME_RULES
+      : variant === 'ideal'
+        ? IDEAL_RESUME_RULES
+        : variant === 'tailored-multi-page'
+          ? MULTI_PAGE_RULES
+          : ONE_PAGE_RULES
 
   const intro =
-    variant === 'ideal'
-      ? `You are an expert resume writer. Produce the IDEAL resume for the job description using ONLY the candidate's real qualifications. Return ONLY the resume as JSON.`
-      : `You are an expert resume writer specializing in ATS-optimized resumes. Rewrite the candidate's resume tailored to the job description. Return ONLY the tailored resume as JSON.`
+    variant === 'perfect'
+      ? `You are an expert resume writer. Produce the PERFECT CANDIDATE resume for the job — start from the candidate's resume and ADD everything missing from the JD to create a complete match. Return ONLY the resume as JSON.`
+      : variant === 'ideal'
+        ? `You are an expert resume writer. Produce the IDEAL resume for the job description using ONLY the candidate's real qualifications. Return ONLY the resume as JSON.`
+        : `You are an expert resume writer specializing in ATS-optimized resumes. Rewrite the candidate's resume tailored to the job description. Return ONLY the tailored resume as JSON.`
 
   const conciseNote = concise
     ? '\n\nIMPORTANT: Prior pass was too long. Be extra concise — fewer bullets and a shorter summary.'
@@ -274,6 +291,11 @@ Analyze fit between this resume and job description. Return interview analysis J
   }
 
   if (kind === 'resume-only') {
+    if (resumeVariant === 'perfect') {
+      return `${base}
+
+Produce the PERFECT CANDIDATE resume: start from the candidate's resume and ADD all missing JD requirements to create a complete match. Return resume JSON only.`
+    }
     if (resumeVariant === 'ideal') {
       return `${base}
 
@@ -389,9 +411,9 @@ function coerceResume(value: unknown, variant: ResumeVariant = 'tailored-one-pag
   if (!isRecord(value)) return emptyResume()
 
   const isCompact = variant === 'tailored-one-page'
-  const maxBullets = isCompact ? 4 : 7
-  const maxSkills = isCompact ? 4 : 8
-  const maxProjects = isCompact ? 5 : 10
+  const maxBullets = isCompact ? 4 : 8
+  const maxSkills = isCompact ? 4 : 10
+  const maxProjects = isCompact ? 5 : 12
 
   const contact = isRecord(value.contact) ? value.contact : {}
   const resume: TailoredResume = {
@@ -706,6 +728,7 @@ export async function generateTailoredResume(
       resumeLength,
       resume: null,
       idealResume: null,
+      perfectResume: null,
       analysis,
       usage,
     }
@@ -713,7 +736,7 @@ export async function generateTailoredResume(
 
   const tailoredVariant = toResumeVariant(resumeLength)
 
-  onProgress?.('Step 1 of 3 — Tailoring your resume…')
+  onProgress?.('Step 1 of 4 — Tailoring your resume…')
   const { resume, usage: resumeUsage } = await generateResumeStep(
     settings,
     jobDescription,
@@ -724,7 +747,7 @@ export async function generateTailoredResume(
 
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
-  onProgress?.('Step 2 of 3 — Building ideal resume for this role…')
+  onProgress?.('Step 2 of 4 — Building ideal resume for this role…')
   const { resume: idealResume, usage: idealUsage } = await generateResumeStep(
     settings,
     jobDescription,
@@ -735,7 +758,18 @@ export async function generateTailoredResume(
 
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
-  onProgress?.('Step 3 of 3 — Scoring interview fit…')
+  onProgress?.('Step 3 of 4 — Building perfect candidate resume…')
+  const { resume: perfectResume, usage: perfectUsage } = await generateResumeStep(
+    settings,
+    jobDescription,
+    currentResume,
+    'perfect',
+    signal,
+  )
+
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
+  onProgress?.('Step 4 of 4 — Scoring interview fit…')
   const summaryText = resumeToAnalysisSummary(resume)
   const { analysis, usage: analysisUsage } = await generateAnalysisStep(
     settings,
@@ -750,8 +784,12 @@ export async function generateTailoredResume(
     resumeLength,
     resume,
     idealResume,
+    perfectResume,
     analysis,
-    usage: mergeUsage(mergeUsage(resumeUsage, idealUsage), analysisUsage),
+    usage: mergeUsage(
+      mergeUsage(mergeUsage(resumeUsage, idealUsage), perfectUsage),
+      analysisUsage,
+    ),
   }
 }
 

@@ -6,11 +6,11 @@ import { CheckIcon, CopyIcon, DownloadIcon } from './icons'
 
 interface Props {
   result: GenerationResult
-  downloading: 'tailored' | 'ideal' | null
-  onDownload: (which: 'tailored' | 'ideal') => void
+  downloading: 'tailored' | 'ideal' | 'perfect' | null
+  onDownload: (which: 'tailored' | 'ideal' | 'perfect') => void
 }
 
-type ResumeTab = 'tailored' | 'ideal'
+type ResumeTab = 'tailored' | 'ideal' | 'perfect'
 
 function resumeToPlainText(r: TailoredResume): string {
   const lines: string[] = []
@@ -187,11 +187,22 @@ function ResumePanel({
   onDownload: () => void
 }) {
   const isIdeal = tab === 'ideal'
+  const isPerfect = tab === 'perfect'
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          {isIdeal ? (
+          {isPerfect ? (
+            <>
+              <h3 className="text-sm font-semibold text-slate-900">Perfect candidate resume</h3>
+              <p className="text-xs text-slate-500">
+                Your resume plus everything missing from the JD — models a complete match for the role.
+              </p>
+              <p className="mt-1 text-xs font-medium text-amber-700">
+                Review before submitting — may include qualifications you still need to develop.
+              </p>
+            </>
+          ) : isIdeal ? (
             <>
               <h3 className="text-sm font-semibold text-slate-900">Ideal resume for this role</h3>
               <p className="text-xs text-slate-500">
@@ -224,13 +235,14 @@ function ResumePanel({
 }
 
 export default function ResultsView({ result, downloading, onDownload }: Props) {
-  const { resume, idealResume, analysis, usage, mode, resumeLength } = result
+  const { resume, idealResume, perfectResume, analysis, usage, mode, resumeLength } = result
   const [activeTab, setActiveTab] = useState<ResumeTab>('tailored')
   const [copiedTab, setCopiedTab] = useState<ResumeTab | null>(null)
   const isFitOnly = mode === 'fit-only'
 
   const copyText = async (tab: ResumeTab) => {
-    const r = tab === 'ideal' ? idealResume : resume
+    const r =
+      tab === 'perfect' ? perfectResume : tab === 'ideal' ? idealResume : resume
     if (!r) return
     await navigator.clipboard.writeText(resumeToPlainText(r))
     setCopiedTab(tab)
@@ -299,7 +311,7 @@ export default function ResultsView({ result, downloading, onDownload }: Props) 
           </div>
         </div>
         <p className="mt-2 text-[10px] text-slate-400">
-          Cost is estimated from Gemini USD pricing at ~RM 4.75/USD. Full mode uses 3 API calls.
+          Cost is estimated from Gemini USD pricing at ~RM 4.75/USD. Full mode uses 4 API calls.
         </p>
       </div>
     </div>
@@ -309,7 +321,12 @@ export default function ResultsView({ result, downloading, onDownload }: Props) 
     return <div className="max-w-xl animate-fade-in">{analysisPanel}</div>
   }
 
-  const activeResume = activeTab === 'ideal' ? idealResume : resume
+  const activeResume =
+    activeTab === 'perfect'
+      ? perfectResume
+      : activeTab === 'ideal'
+        ? idealResume
+        : resume
 
   return (
     <div className="grid animate-fade-in gap-5 lg:grid-cols-[360px_1fr]">
@@ -320,24 +337,35 @@ export default function ResultsView({ result, downloading, onDownload }: Props) 
           <button
             type="button"
             onClick={() => setActiveTab('tailored')}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
+            className={`flex-1 rounded-md px-2 py-2 text-xs font-medium transition sm:px-3 sm:text-sm ${
               activeTab === 'tailored'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Tailored resume
+            Tailored
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('ideal')}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
+            className={`flex-1 rounded-md px-2 py-2 text-xs font-medium transition sm:px-3 sm:text-sm ${
               activeTab === 'ideal'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Ideal resume
+            Ideal
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('perfect')}
+            className={`flex-1 rounded-md px-2 py-2 text-xs font-medium transition sm:px-3 sm:text-sm ${
+              activeTab === 'perfect'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Perfect
           </button>
         </div>
 

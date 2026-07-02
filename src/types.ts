@@ -86,6 +86,8 @@ export interface GenerationResult {
   resume: TailoredResume | null
   /** Best possible resume for the role using only the candidate's real qualifications. */
   idealResume: TailoredResume | null
+  /** Aspirational resume that adds missing JD requirements to model a perfect candidate. */
+  perfectResume: TailoredResume | null
   analysis: InterviewAnalysis
   usage: TokenUsage
 }

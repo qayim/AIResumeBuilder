@@ -135,8 +135,8 @@ export default function ResumeForm({
             </button>
           </div>
           <p className="mt-2 text-xs text-slate-500">
-            You also get an <strong>ideal resume</strong> — the best possible version for this job using
-            only your real qualifications.
+            You also get an <strong>ideal resume</strong> (truthful best version) and a{' '}
+            <strong>perfect resume</strong> (adds missing JD requirements to model a complete match).
           </p>
         </div>
       ) : null}
